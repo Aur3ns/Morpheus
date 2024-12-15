@@ -1,4 +1,4 @@
-# Memory Dumper for lsass.exe
+<h1 align="center"> Project lsassDumper </h1>
 
 ## Description
 
