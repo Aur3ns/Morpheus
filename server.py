@@ -15,7 +15,8 @@ def print_progress(current, total):
     bar_length = 20
     filled_length = int(bar_length * percent // 100)
     bar = '=' * filled_length + '-' * (bar_length - filled_length)
-    print(f"\r[Reconstitution] [{bar}] {percent}% ({current}/{total})", end='')
+    # Affichage de la progression avec la barre de progression
+    print(f"\r[Reconstitution] [{bar}] {percent}% ({current}/{total})", end='', flush=True)
 
 def run_receiver(host, port, output_file, timeout=30):
     """
@@ -32,7 +33,7 @@ def run_receiver(host, port, output_file, timeout=30):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host, port))
     sock.settimeout(5)  # Timeout de 5 secondes pour chaque réception
-    logging.info(f"En écoute sur {host}:{port} (timeout global: {timeout} s)")
+    logging.info(f"Listening on {host}:{port} (global timeout: {timeout} s)")
 
     header_received = False
     total_fragments = 0
@@ -45,14 +46,14 @@ def run_receiver(host, port, output_file, timeout=30):
             data, addr = sock.recvfrom(1024)  # On attend des paquets NTP
         except socket.timeout:
             if time.time() - start_time > timeout:
-                logging.warning("Timeout global atteint, arrêt de la réception.")
+                logging.warning("Global timeout reached, stopping reception.")
                 break
             else:
-                logging.debug("Timeout sur la réception d'un paquet, réessai...")
+                logging.debug("Packet reception timeout, retrying...")
                 continue
 
         if len(data) < 48:
-            logging.debug("Paquet trop court, ignoré.")
+            logging.debug("Packet too short, ignored.")
             continue
 
         # Extraction du champ 'transmit timestamp' (octets 40 à 47)
@@ -63,7 +64,7 @@ def run_receiver(host, port, output_file, timeout=30):
             total_fragments = struct.unpack(">I", payload[:4])[0]
             total_size = struct.unpack(">I", payload[4:8])[0]
             header_received = True
-            logging.info(f"Header reçu : {total_fragments} fragments, {total_size} octets compressés.")
+            logging.info(f"Header received: {total_fragments} fragments, {total_size} compressed bytes.")
         else:
             # Extraction du numéro de séquence et du fragment
             seq = struct.unpack(">I", payload[:4])[0]
@@ -73,28 +74,28 @@ def run_receiver(host, port, output_file, timeout=30):
                 current = len(fragments)
                 print_progress(current, total_fragments)
             else:
-                logging.debug(f"Fragment {seq} déjà reçu, ignoré.")
+                logging.debug(f"Fragment {seq} already received, ignored.")
 
             # Si tous les fragments sont reçus, on arrête la réception
             if len(fragments) == total_fragments:
-                logging.info("\nTous les fragments ont été reçus.")
+                logging.info("\nAll fragments received.")
                 break
 
         # Vérifier le délai global
         if time.time() - start_time > timeout:
-            logging.warning("Le délai global est dépassé, fin de la réception.")
+            logging.warning("Global timeout exceeded, ending reception.")
             break
 
     sock.close()
     print()  # Pour passer à la ligne après la barre de progression
 
     if not header_received:
-        logging.error("Aucun header reçu. Arrêt du programme.")
+        logging.error("No header received. Exiting.")
         sys.exit(1)
 
     if len(fragments) != total_fragments:
-        logging.warning(f"Fragments attendus: {total_fragments} | Fragments reçus: {len(fragments)}")
-        logging.warning("Le dump pourra être incomplet.")
+        logging.warning(f"Expected fragments: {total_fragments} | Received fragments: {len(fragments)}")
+        logging.warning("The dump may be incomplete.")
 
     # Reconstitution du flux compressé en respectant l'ordre des fragments
     compressed_data = bytearray()
@@ -109,15 +110,15 @@ def run_receiver(host, port, output_file, timeout=30):
         dump_data = zlib.decompress(compressed_data)
         with open(output_file, "wb") as f:
             f.write(dump_data)
-        logging.info(f"Dump décompressé et sauvegardé dans {output_file}.")
+        logging.info(f"Dump decompressed and saved to {output_file}.")
     except Exception as e:
-        logging.error(f"La décompression a échoué : {e}")
+        logging.error(f"Decompression failed: {e}")
         with open(output_file + ".compressed", "wb") as f:
             f.write(compressed_data)
-        logging.info(f"Dump compressé sauvegardé dans {output_file}.compressed.")
+        logging.info(f"Compressed dump saved to {output_file}.compressed.")
 
 if __name__ == '__main__':
     host = "0.0.0.0"   # Écoute sur toutes les interfaces
-    port = 123         # Port UDP d'écoute (comme trafic NTP)
+    port = 123         # Port UDP d'écoute (simulant du trafic NTP)
     output_file = "dump_memory.bin"  # Fichier de sortie pour le dump
     run_receiver(host, port, output_file)
