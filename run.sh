@@ -1,26 +1,29 @@
 #!/bin/bash
 
-# Installation des dépendances pour C et Python
+# Fonction pour installer les dépendances
 install_dependencies() {
     echo "[*] Installing dependencies..."
     sudo apt update
-    sudo apt install -y mingw-w64 upx python3-pip
-    pip install --upgrade pyinstaller
+    sudo apt install -y gcc zlib1g-dev upx
+    if [ $? -ne 0 ]; then
+        echo "[!] Failed to install dependencies."
+        exit 1
+    fi
     echo "[+] All dependencies installed successfully."
 }
 
-# Compilation du programme C avec MinGW
+# Compilation du programme C
 compile_c_program() {
     SOURCE_FILE="dumper.c"
-    EXECUTABLE="memdump.exe"
-    echo "[*] Compiling C program..."
+    EXECUTABLE="memdump"
     
-    x86_64-w64-mingw32-g++ -o "$EXECUTABLE" "$SOURCE_FILE" -lz -lws2_32 -lDbgHelp
+    echo "[*] Compiling C program..."
+    gcc -o "$EXECUTABLE" "$SOURCE_FILE" -lz
     if [ $? -ne 0 ]; then
-        echo "[!] C compilation failed."
+        echo "[!] Compilation failed."
         exit 1
     fi
-    echo "[+] C compilation successful: $EXECUTABLE"
+    echo "[+] Compilation successful: $EXECUTABLE"
 }
 
 # Obfuscation avec UPX
@@ -30,45 +33,25 @@ obfuscate_executable() {
         echo "[*] Obfuscating executable with UPX..."
         upx --best "$exe_path" || { echo "[!] UPX failed."; exit 1; }
         echo "[+] Obfuscation completed."
+    else
+        echo "[!] UPX not found. Skipping obfuscation."
     fi
 }
 
-# Lancement du programme C
+# Exécution du programme C
 run_c_program() {
-    EXECUTABLE="memdump.exe"
-    echo "[*] Running C program..."
-    ./"$EXECUTABLE"
+    EXECUTABLE="./memdump"
+    if [ -f "$EXECUTABLE" ]; then
+        echo "[*] Running C program..."
+        "$EXECUTABLE"
+    else
+        echo "[!] Executable not found."
+        exit 1
+    fi
 }
 
-# Compilation du script Python en exécutable
-build_python_executable() {
-    PY_SOURCE="memdump.py"
-    echo "[*] Building Python executable..."
-    pyinstaller --onefile "$PY_SOURCE" --noconsole
-}
-
-# Lancement du programme Python
-run_python_program() {
-    PY_EXECUTABLE="dist/memdump"
-    echo "[*] Running Python program..."
-    ./"$PY_EXECUTABLE"
-}
-
-# Menu de sélection
-echo "Which version do you want to use? (C/Python)"
-read -r version_choice
-
-if [[ "$version_choice" =~ ^[Cc] ]]; then
-    install_dependencies
-    compile_c_program
-    obfuscate_executable "memdump.exe"
-    run_c_program
-elif [[ "$version_choice" =~ ^[Pp] ]]; then
-    install_dependencies
-    build_python_executable
-    obfuscate_executable "dist/memdump"
-    run_python_program
-else
-    echo "[!] Invalid choice. Choose 'C' or 'Python'."
-    exit 1
-fi
+# Lancement des fonctions
+install_dependencies
+compile_c_program
+obfuscate_executable "memdump"
+run_c_program
