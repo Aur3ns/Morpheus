@@ -1,67 +1,36 @@
 #!/bin/bash
 
-# Fonction pour installer les dépendances C
-install_c_dependencies() {
-    echo "[*] Installing C dependencies..."
-    sudo apt-get update
-    sudo apt-get install -y g++ zlib1g-dev
-    if [ $? -ne 0 ]; then
-        echo "[!] Failed to install C dependencies."
-        exit 1
-    fi
-    echo "[+] C dependencies installed successfully."
+# Installation des dépendances pour C et Python
+install_dependencies() {
+    echo "[*] Installing dependencies..."
+    sudo apt update
+    sudo apt install -y mingw-w64 upx python3-pip
+    pip install --upgrade pyinstaller
+    echo "[+] All dependencies installed successfully."
 }
 
-# Vérification des dépendances C
-check_c_dependencies() {
-    echo "[*] Checking C dependencies..."
-    for dep in g++; do
-        if ! dpkg -l | grep -q ${dep}; then
-            echo "[!] Dependency ${dep} is not installed."
-            install_c_dependencies
-            return
-        fi
-    done
-    echo "[+] All C dependencies are installed."
-}
-
-# Vérification de la présence de UPX pour l'obfuscation
-check_upx() {
-    if ! command -v upx &>/dev/null; then
-        echo "[*] UPX is not installed. Installing UPX..."
-        sudo apt-get install -y upx
-        if [ $? -ne 0 ]; then
-            echo "[!] Failed to install UPX."
-            return 1
-        fi
-    fi
-    return 0
-}
-
-# Obfuscation de l'exécutable avec UPX
-obfuscate_executable() {
-    local exe_path="$1"
-    echo "[*] Obfuscating executable with UPX..."
-    upx --best "$exe_path"
-    if [ $? -ne 0 ]; then
-        echo "[!] Obfuscation failed."
-        exit 1
-    fi
-    echo "[+] Obfuscation completed."
-}
-
-# Compilation du programme C
+# Compilation du programme C avec MinGW
 compile_c_program() {
     SOURCE_FILE="dumper.c"
     EXECUTABLE="memdump.exe"
     echo "[*] Compiling C program..."
-    g++ -o "$EXECUTABLE" "$SOURCE_FILE" -lz -lws2_32 -ldbghelp
+    
+    x86_64-w64-mingw32-g++ -o "$EXECUTABLE" "$SOURCE_FILE" -lz -lws2_32 -lDbgHelp
     if [ $? -ne 0 ]; then
-        echo "[!] C compilation failed. Check the source file."
+        echo "[!] C compilation failed."
         exit 1
     fi
     echo "[+] C compilation successful: $EXECUTABLE"
-    check_upx && obfuscate_executable "$EXECUTABLE"
+}
+
+# Obfuscation avec UPX
+obfuscate_executable() {
+    local exe_path="$1"
+    if command -v upx &>/dev/null; then
+        echo "[*] Obfuscating executable with UPX..."
+        upx --best "$exe_path" || { echo "[!] UPX failed."; exit 1; }
+        echo "[+] Obfuscation completed."
+    fi
 }
 
 # Lancement du programme C
@@ -69,67 +38,37 @@ run_c_program() {
     EXECUTABLE="memdump.exe"
     echo "[*] Running C program..."
     ./"$EXECUTABLE"
-    if [ $? -ne 0 ]; then
-        echo "[!] The C program encountered an error."
-        exit 1
-    fi
-    echo "[+] C program finished successfully."
 }
 
-# Vérification de la présence de PyInstaller pour la version Python
-check_pyinstaller() {
-    if ! command -v pyinstaller &>/dev/null; then
-        echo "[*] PyInstaller is not installed. Installing..."
-        pip install pyinstaller
-        if [ $? -ne 0 ]; then
-            echo "[!] Failed to install PyInstaller."
-            exit 1
-        fi
-    fi
-}
-
-# Transformation du script Python en exécutable
+# Compilation du script Python en exécutable
 build_python_executable() {
     PY_SOURCE="memdump.py"
-    echo "[*] Converting Python script to executable with PyInstaller..."
+    echo "[*] Building Python executable..."
     pyinstaller --onefile "$PY_SOURCE" --noconsole
-    if [ $? -ne 0 ]; then
-        echo "[!] Python executable conversion failed."
-        exit 1
-    fi
-    echo "[+] Python executable conversion successful."
 }
 
 # Lancement du programme Python
 run_python_program() {
     PY_EXECUTABLE="dist/memdump"
-    if [ ! -f "$PY_EXECUTABLE" ]; then
-        echo "[!] Python executable not found."
-        exit 1
-    fi
-    check_upx && obfuscate_executable "$PY_EXECUTABLE"
     echo "[*] Running Python program..."
     ./"$PY_EXECUTABLE"
-    if [ $? -ne 0 ]; then
-        echo "[!] The Python program encountered an error."
-        exit 1
-    fi
-    echo "[+] Python program finished successfully."
 }
 
-# Demande à l'utilisateur quelle version utiliser
+# Menu de sélection
 echo "Which version do you want to use? (C/Python)"
 read -r version_choice
 
 if [[ "$version_choice" =~ ^[Cc] ]]; then
-    check_c_dependencies
+    install_dependencies
     compile_c_program
+    obfuscate_executable "memdump.exe"
     run_c_program
 elif [[ "$version_choice" =~ ^[Pp] ]]; then
-    check_pyinstaller
+    install_dependencies
     build_python_executable
+    obfuscate_executable "dist/memdump"
     run_python_program
 else
-    echo "[!] Unrecognized option. Please choose 'C' or 'Python'."
+    echo "[!] Invalid choice. Choose 'C' or 'Python'."
     exit 1
 fi
