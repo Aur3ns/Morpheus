@@ -1,5 +1,4 @@
-# **lsassDumper**
-> ** Windows LSASS Memory Dumper & Exfiltration via UDP NTP Packets**  
+<h1 align="center"> Project lsassDumper </h1>
 
 ## **🔍 Overview**
 `lsassDumper` is an advanced tool designed to **stealthily dump the memory of the Windows process `lsass.exe`** and **exfiltrate** it using **UDP packets disguised as NTP requests**.  
