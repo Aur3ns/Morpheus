@@ -79,16 +79,6 @@ This **allows memory dump exfiltration under the disguise of legitimate NTP traf
    Set-ExecutionPolicy Bypass -Scope Process -Force; ./run.ps1
    ```
 
-### **🔹 Linux (Bash)**
- -- If you have wingw configured
-1. Open **Terminal** and run:
-   ```bash
-   sudo apt update && sudo apt upgrade
-   pip install -r requirements.txt
-   ./run.sh
-   ```
-
-
 ---
 
 ## **🎯 Usage**
