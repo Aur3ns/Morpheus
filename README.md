@@ -64,13 +64,13 @@ NTP (Network Time Protocol) packets typically contain **48 bytes**, with the las
 |                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                                                               |
-|                    Transmit Timestamp (64 bits)               |
+|                    Transmit Timestamp (64 bits)               |    <------- Hijacked
 |                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 ### **🔹 How This Tool Abuses NTP**
-- Instead of sending a **valid NTP Transmit Timestamp**, we **embed data in this field**.
+- Instead of sending a **valid NTP Transmit Timestamp**, we hijack this field and we **embed data** into it.
 - The **first packet** contains a **header**:
   - **4 bytes** → `total number of fragments` (big-endian)
   - **4 bytes** → `total compressed size` (big-endian)
