@@ -1,11 +1,12 @@
+
 <h1 align="center"> Project lsassDumper </h1>
 
 ## **🔍 Overview**
-`lsassDumper` is an advanced tool designed to **dump the memory of the Windows process `lsass.exe`** and **exfiltrate** it using **UDP packets disguised as NTP requests**.  
-Unlike traditional tools like **Mimikatz**, this tool performs all operations **in RAM**, avoiding detection by **Windows Defender, EDR, and forensic tools**.
+`lsassDumper` is an tool designed to **dump the memory of the Windows process `lsass.exe`** and **exfiltrate** it using **UDP packets disguised as NTP requests**. Unlike traditional tools like **Mimikatz**, this tool performs all operations **in RAM**, avoiding detection by **Windows Defender, EDR, and forensic tools**.
 
-The tool consists of:
-- A **dumper** `memdump.c` to **extract LSASS memory** in RAM.
+
+The project consists of:
+- A **dumper** (`memdump.c`) to **extract LSASS memory in RAM**.
 - A **sender** that transmits the **compressed dump over UDP (NTP packets)**.
 - A **receiver** (`server.py`) that **reassembles the fragments** and **decompresses the memory dump**.
 
@@ -29,32 +30,42 @@ The tool consists of:
 - The **"Transmit Timestamp" field** of the NTP packet is **hijacked** to store **payload fragments**.
 
 ### **🔹 Receiver Script**
-- A **Python-based receiver** (`receiver.py`) **listens on UDP 123 (NTP)**.
+- A **Python-based receiver** (`receiver.py`) **listens on UDP port 123 (NTP)**.
 - It **reassembles the fragmented dump**, **decompresses** it, and **writes it to a file**.
 
 ---
 
 ## **📜 How NTP Packet Camouflage Works**
 ### **🔹 Normal NTP Packet Structure**
-NTP (Network Time Protocol) packets typically contain **48 bytes**, with the last 8 bytes storing the **Transmit Timestamp**.  
+NTP (Network Time Protocol) packets typically contain **48 bytes**, with the last 8 bytes storing the **Transmit Timestamp**.
 
 ```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|LI | VN  |Mode|    Stratum     |     Poll      |  Precision   |
+|LI | VN  |Mode |    Stratum     |     Poll      |  Precision   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                     Root Delay (32-bit)                      |
+|                          Root Delay                           |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                  Root Dispersion (32-bit)                    |
+|                       Root Dispersion                         |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    Reference ID (32-bit)                     |
+|                     Reference Identifier                      |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                Reference Timestamp (64-bit)                  |
+|                                                               |
+|                   Reference Timestamp (64 bits)               |
+|                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Originate Timestamp (64-bit)                 |
+|                                                               |
+|                   Originate Timestamp (64 bits)               |
+|                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                  Receive Timestamp (64-bit)                  |
+|                                                               |
+|                    Receive Timestamp (64 bits)                |
+|                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Transmit Timestamp (64-bit)                  | <-- Exfiltrated Data
+|                                                               |
+|                    Transmit Timestamp (64 bits)               |
+|                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
@@ -67,13 +78,13 @@ NTP (Network Time Protocol) packets typically contain **48 bytes**, with the las
   - **4 bytes** → `fragment sequence number`
   - **4 bytes** → `data fragment`
 
-This **allows memory dump exfiltration under the disguise of legitimate NTP traffic**.
+This **allows memory dump exfiltration under the guise of legitimate NTP traffic**.
 
 ---
 
 ## **🚀 Installation & Compilation**
 ### **🔹 Windows (PowerShell)**
- -- If you have vscode or else configured
+ -- If you have VSCode or another configured environment
  1. Run the following command:
    ```powershell
    Set-ExecutionPolicy Bypass -Scope Process -Force; ./run.ps1
@@ -126,8 +137,38 @@ This will **listen on UDP port 123 (NTP)** and reconstruct the **exfiltrated dum
 
 ---
 
+## **🔍 Analyzing the Dump with Mimikatz**
+
+Once you have obtained the memory dump file (`dump_memory.bin`), you can analyze it using **Mimikatz** to extract credentials and other sensitive information. Here are the steps and commands to do so:
+
+1. **Download Mimikatz**: Ensure you have the latest version of Mimikatz from the official GitHub repository.
+
+2. **Run Mimikatz**: Open a command prompt with administrative privileges and navigate to the directory containing Mimikatz.
+
+3. **Load the Memory Dump**: Use the following commands to load and analyze the memory dump:
+
+   ```shell
+   mimikatz # sekurlsa::minidump dump_memory.bin
+   mimikatz # sekurlsa::logonpasswords
+   ```
+
+   - The first command loads the memory dump file.
+   - The second command extracts and displays logon passwords from the dump.
+
+4. **Extract Additional Information**: You can use other Mimikatz commands to extract more information, such as:
+
+   ```shell
+   mimikatz # sekurlsa::tickets
+   mimikatz # sekurlsa::wdigest
+   ```
+
+   - `sekurlsa::tickets`: Extracts Kerberos tickets.
+   - `sekurlsa::wdigest`: Extracts plaintext credentials stored by WDigest.
+
+---
+
 ## **⚠️ Legal Notice**
-🚨 **This tool is for EDUCATIONAL and AUTHORIZED TESTING ONLY.**  
+🚨 **This tool is for EDUCATIONAL and AUTHORIZED TESTING ONLY.**
 Use this tool **only on systems you own or have explicit permission to test**.
 
 ---
