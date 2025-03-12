@@ -87,17 +87,6 @@ function Obfuscate-Executable {
     }
 }
 
-# Exécution du programme C
-function Run-CProgram {
-    $exePath = ".\memdump.exe"
-    if (Test-Path $exePath) {
-        Write-Host "[*] Running C program..."
-        Start-Process -FilePath $exePath -Wait
-    } else {
-        Write-Host "[!] Executable not found."
-    }
-}
-
 # Lancement des fonctions
 Install-Chocolatey
 Install-GCC
