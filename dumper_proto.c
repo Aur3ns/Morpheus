@@ -1,3 +1,5 @@
+//Don't USE !!! Still in devellopment !!!
+
 #include <winsock2.h>
 #include <windows.h>
 #include <tlhelp32.h>
