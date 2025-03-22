@@ -134,7 +134,7 @@ This will **listen on UDP port 123 (NTP)** and reconstruct the **exfiltrated dum
 [INFO] Decompressing...
 [INFO] Dump saved as dump_memory.bin.
 ```
-
+### WARNING : The exe has to be launched with SYSTEM privileges otherwise there's big chance it will fail.
 ---
 
 ## **🔍 Analyzing the Dump with Mimikatz**
