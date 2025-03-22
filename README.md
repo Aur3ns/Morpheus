@@ -2,7 +2,7 @@
 <h1 align="center"> Project lsassStealer </h1>
 
 ## **🔍 Overview**
-`lsassDumper` is an tool designed to **dump the memory of the Windows process `lsass.exe`** and **exfiltrate** it using **UDP packets disguised as NTP requests**. Unlike traditional tools like **Mimikatz**, this tool performs all operations **in RAM**, avoiding detection by **Windows Defender, EDR, and forensic tools**.
+`lsassStealer` is an tool designed to **dump the memory of the Windows process `lsass.exe`** and **exfiltrate** it using **UDP packets disguised as NTP requests**. Unlike traditional tools like **Mimikatz**, this tool performs all operations **in RAM**, avoiding detection by **Windows Defender, EDR, and forensic tools**.
 
 
 The project consists of:
