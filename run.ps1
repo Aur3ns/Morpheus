@@ -97,7 +97,7 @@ function Compile-CProgram {
     $zlibInclude = "$vcpkgRoot\installed\$triplet\include"
     $zlibLib = "$vcpkgRoot\installed\$triplet\lib"
 
-    gcc -I"$zlibInclude" -L"$zlibLib" -o $executable $sourceFile -lz -lws2_32 -lDbgHelp
+    gcc -I"$zlibInclude" -L"$zlibLib" -o $executable $sourceFile -lzlib -lws2_32 -lDbgHelp
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[!] Compilation failed."
         exit 1
