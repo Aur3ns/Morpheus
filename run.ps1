@@ -69,14 +69,16 @@ function Install-Zlib {
 
 # Vérification et installation de UPX
 function Install-UPX {
-    if (-Not (Test-Path "C:\UPX\upx.exe")) {
+    # Recherche récursive de upx.exe dans C:\UPX
+    $upxPath = Get-ChildItem -Path "C:\UPX" -Filter "upx.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-Not $upxPath) {
         Write-Host "[*] UPX not found. Downloading..."
         Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v5.0.0/upx-5.0.0-win64.zip" -OutFile "upx-5.0.0-win64.zip"
         Expand-Archive -Path "upx-5.0.0-win64.zip" -DestinationPath "C:\UPX" -Force
         Remove-Item "upx-5.0.0-win64.zip"
         Write-Host "[+] UPX installed successfully."
     } else {
-        Write-Host "[+] UPX already installed."
+        Write-Host "[+] UPX already installed at $($upxPath.FullName)."
     }
 }
 
@@ -108,10 +110,11 @@ function Compile-CProgram {
 
 # Obfuscation de l'exécutable avec UPX
 function Obfuscate-Executable {
-    $exePath = "memdump.exe"
-    if (Test-Path "C:\UPX\upx.exe") {
+    # Recherche récursive de upx.exe dans C:\UPX
+    $upxExe = Get-ChildItem -Path "C:\UPX" -Filter "upx.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($upxExe) {
         Write-Host "[*] Obfuscating executable with UPX..."
-        Start-Process -FilePath "C:\UPX\upx.exe" -ArgumentList "--best $exePath" -Wait
+        Start-Process -FilePath $upxExe.FullName -ArgumentList "--best memdump.exe" -Wait
         Write-Host "[+] Obfuscation completed."
     } else {
         Write-Host "[!] UPX not found. Skipping obfuscation."
