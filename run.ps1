@@ -28,8 +28,8 @@ function Install-Zlib {
 
     if (-Not (Test-Path $zlibIncludePath) -or -Not (Test-Path $zlibLibPath)) {
         Write-Host "[*] Zlib not found. Downloading and installing..."
-        Invoke-WebRequest -Uri "https://zlib.net/zlib1211.zip" -OutFile "zlib.zip"
-        Expand-Archive -Path "zlib.zip" -DestinationPath "C:\zlib" -Force
+        Invoke-WebRequest -Uri "https://zlib.net/current/zlib.tar.gz" -OutFile "zlib.tar.gz"
+        Expand-Archive -Path "zlib.tar.gz" -DestinationPath "C:\zlib" -Force
         Move-Item -Path "C:\zlib\zlib.h" -Destination "C:\mingw64\include"
         Move-Item -Path "C:\zlib\zconf.h" -Destination "C:\mingw64\include"
         Move-Item -Path "C:\zlib\libz.a" -Destination "C:\mingw64\lib"
@@ -46,9 +46,9 @@ function Install-Zlib {
 function Install-UPX {
     if (-Not (Test-Path "C:\UPX\upx.exe")) {
         Write-Host "[*] UPX not found. Downloading..."
-        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/latest/download/upx-win64.zip" -OutFile "upx.zip"
-        Expand-Archive -Path "upx.zip" -DestinationPath "C:\UPX" -Force
-        Remove-Item "upx.zip"
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v5.0.0/upx-5.0.0-win64.zip" -OutFile "upx-5.0.0-win64.zip"
+        Expand-Archive -Path "upx-5.0.0-win64.zip" -DestinationPath "C:\UPX" -Force
+        Remove-Item "upx-5.0.0-win64.zip"
         Write-Host "[+] UPX installed successfully."
     } else {
         Write-Host "[+] UPX already installed."
