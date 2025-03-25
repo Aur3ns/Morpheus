@@ -28,19 +28,55 @@ function Install-Zlib {
 
     if (-Not (Test-Path $zlibIncludePath) -or -Not (Test-Path $zlibLibPath)) {
         Write-Host "[*] Zlib not found. Downloading and installing..."
-        Invoke-WebRequest -Uri "https://zlib.net/current/zlib.tar.gz" -OutFile "zlib.tar.gz"
-        Expand-Archive -Path "zlib.tar.gz" -DestinationPath "C:\zlib" -Force
-        Move-Item -Path "C:\zlib\zlib.h" -Destination "C:\mingw64\include"
-        Move-Item -Path "C:\zlib\zconf.h" -Destination "C:\mingw64\include"
-        Move-Item -Path "C:\zlib\libz.a" -Destination "C:\mingw64\lib"
-        Move-Item -Path "C:\zlib\zlib1.dll" -Destination "C:\Windows\System32"
-        Remove-Item "zlib.zip"
-        Remove-Item "C:\zlib" -Recurse
+        
+        # Télécharger l'archive tar.gz
+        $zlibArchive = "zlib.tar.gz"
+        $zlibUrl = "https://zlib.net/current/zlib.tar.gz"
+        Invoke-WebRequest -Uri $zlibUrl -OutFile $zlibArchive
+
+        # Créer un dossier temporaire pour l'extraction
+        $extractDir = "C:\zlib_extract"
+        if (-Not (Test-Path $extractDir)) {
+            New-Item -ItemType Directory -Path $extractDir | Out-Null
+        }
+        
+        # Extraire l'archive avec tar (Windows 10/11 intègre tar)
+        tar -xzf $zlibArchive -C $extractDir
+
+        # Récupérer le sous-dossier extrait (on suppose qu'il y en a un unique)
+        $subFolder = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+        if ($null -eq $subFolder) {
+            Write-Host "[!] Extraction failed. Exiting."
+            exit 1
+        }
+
+        # Chemins des fichiers attendus dans le sous-dossier
+        $zlibFile = Join-Path $subFolder.FullName "zlib.h"
+        $zconfFile = Join-Path $subFolder.FullName "zconf.h"
+        $libzFile  = Join-Path $subFolder.FullName "libz.a"
+        $dllFile   = Join-Path $subFolder.FullName "zlib1.dll"
+
+        if (-Not (Test-Path $zlibFile) -or -Not (Test-Path $zconfFile) -or -Not (Test-Path $libzFile) -or -Not (Test-Path $dllFile)) {
+            Write-Host "[!] Required Zlib files not found. Exiting."
+            exit 1
+        }
+
+        # Déplacer les fichiers dans les répertoires cibles
+        Move-Item -Path $zlibFile -Destination "C:\mingw64\include" -Force
+        Move-Item -Path $zconfFile -Destination "C:\mingw64\include" -Force
+        Move-Item -Path $libzFile  -Destination "C:\mingw64\lib" -Force
+        Move-Item -Path $dllFile   -Destination "C:\Windows\System32" -Force
+
+        # Nettoyer les fichiers temporaires
+        Remove-Item $zlibArchive -Force
+        Remove-Item $extractDir -Recurse -Force
+
         Write-Host "[+] Zlib installed successfully."
     } else {
         Write-Host "[+] Zlib already installed."
     }
 }
+
 
 # Vérification et installation de UPX
 function Install-UPX {
@@ -97,4 +133,3 @@ Obfuscate-Executable
 
 
 Write-Host "[+] Operation Complete"
-
