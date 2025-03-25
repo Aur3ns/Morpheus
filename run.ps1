@@ -94,4 +94,7 @@ Install-Zlib
 Install-UPX
 Compile-CProgram
 Obfuscate-Executable
-Run-CProgram
+
+
+Write-Host "[+] Operation Complete"
+
