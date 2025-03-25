@@ -27,7 +27,6 @@ function Install-Vcpkg {
     $vcpkgExe = "$vcpkgRoot\vcpkg.exe"
     if (-Not (Test-Path $vcpkgExe)) {
         Write-Host "[*] vcpkg not found. Installing..."
-        # Cloner le dépôt vcpkg dans C:\vcpkg
         git clone https://github.com/Microsoft/vcpkg.git $vcpkgRoot
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[!] Failed to clone vcpkg repository."
@@ -47,15 +46,13 @@ function Install-Vcpkg {
     }
 }
 
-# Installation de zlib via vcpkg en configurant l'environnement pour MinGW
+# Installation de zlib via vcpkg en mode statique pour MinGW
 function Install-Zlib {
     $vcpkgRoot = "C:\vcpkg"
     $vcpkgExe = "$vcpkgRoot\vcpkg.exe"
-    # Choix du triplet pour MinGW
-    $triplet = "x64-mingw-dynamic"
-    Write-Host "[*] Installing zlib via vcpkg using triplet $triplet..."
+    $triplet = "x64-mingw-static"  # Utilise la version statique
     
-    # Définir les variables d'environnement pour utiliser le toolchain MinGW
+    Write-Host "[*] Installing zlib via vcpkg using triplet $triplet..."
     $env:VCPKG_DEFAULT_TRIPLET = $triplet
     $env:VCPKG_CHAINLOAD_TOOLCHAIN_FILE = "$vcpkgRoot\scripts\buildsystems\mingw.cmake"
     
@@ -67,9 +64,8 @@ function Install-Zlib {
     Write-Host "[+] zlib installed successfully via vcpkg."
 }
 
-# Vérification et installation de UPX
+# Vérification et installation de UPX (facultatif)
 function Install-UPX {
-    # Recherche récursive de upx.exe dans C:\UPX
     $upxPath = Get-ChildItem -Path "C:\UPX" -Filter "upx.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-Not $upxPath) {
         Write-Host "[*] UPX not found. Downloading..."
@@ -82,10 +78,11 @@ function Install-UPX {
     }
 }
 
-# Compilation du programme C avec GCC en utilisant zlib installé via vcpkg
+# Compilation du programme C avec GCC en liant statiquement zlib
 function Compile-CProgram {
     $sourceFile = "dumper.c"
     $executable = "memdump.exe"
+    $triplet = "x64-mingw-static"
 
     if (-Not (Get-Command gcc -ErrorAction SilentlyContinue)) {
         Write-Host "[!] GCC not found. Make sure MinGW is installed."
@@ -93,13 +90,12 @@ function Compile-CProgram {
     }
 
     Write-Host "[*] Compiling C program..."
-    # Chemins d'inclusion et de librairie depuis vcpkg
     $vcpkgRoot = "C:\vcpkg"
-    $triplet = "x64-mingw-dynamic"
     $zlibInclude = "$vcpkgRoot\installed\$triplet\include"
     $zlibLib = "$vcpkgRoot\installed\$triplet\lib"
 
-    gcc -I"$zlibInclude" -L"$zlibLib" -o $executable $sourceFile -lzlib -lws2_32 -lDbgHelp
+    # Compilation en liant statiquement (-static) et en incluant zlib, ws2_32 et DbgHelp
+    gcc -I"$zlibInclude" -L"$zlibLib" -static -o $executable $sourceFile -lzlib -lws2_32 -lDbgHelp
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[!] Compilation failed."
         exit 1
@@ -108,9 +104,8 @@ function Compile-CProgram {
     }
 }
 
-# Obfuscation de l'exécutable avec UPX
+# Obfuscation de l'exécutable avec UPX (facultatif)
 function Obfuscate-Executable {
-    # Recherche récursive de upx.exe dans C:\UPX
     $upxExe = Get-ChildItem -Path "C:\UPX" -Filter "upx.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($upxExe) {
         Write-Host "[*] Obfuscating executable with UPX..."
