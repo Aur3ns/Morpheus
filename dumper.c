@@ -16,16 +16,38 @@
 
 
 // --- Activation du privilège SeDebugPrivilege ---
+// --- Activation du privilège SeDebugPrivilege via appels indirects ---
 BOOL EnableDebugPrivilege(void) {
+    // Chargement de advapi32.dll
+    HMODULE hAdvapi = GetModuleHandleW(L"advapi32.dll");
+    if (!hAdvapi) {
+        printf("[!] Échec de chargement de advapi32.dll.\n");
+        return FALSE;
+    }
+
+    // Définition des pointeurs vers les fonctions nécessaires
+    typedef BOOL (WINAPI *pOpenProcessToken)(HANDLE, DWORD, PHANDLE);
+    typedef BOOL (WINAPI *pLookupPrivilegeValueW)(LPCWSTR, LPCWSTR, PLUID);
+    typedef BOOL (WINAPI *pAdjustTokenPrivileges)(HANDLE, BOOL, PTOKEN_PRIVILEGES, DWORD, PTOKEN_PRIVILEGES, PDWORD);
+
+    pOpenProcessToken fOpenProcessToken = (pOpenProcessToken)GetProcAddress(hAdvapi, "OpenProcessToken");
+    pLookupPrivilegeValueW fLookupPrivilegeValueW = (pLookupPrivilegeValueW)GetProcAddress(hAdvapi, "LookupPrivilegeValueW");
+    pAdjustTokenPrivileges fAdjustTokenPrivileges = (pAdjustTokenPrivileges)GetProcAddress(hAdvapi, "AdjustTokenPrivileges");
+
+    if (!fOpenProcessToken || !fLookupPrivilegeValueW || !fAdjustTokenPrivileges) {
+        printf("[!] Échec de récupération d'une ou plusieurs fonctions depuis advapi32.dll.\n");
+        return FALSE;
+    }
+
     HANDLE hToken;
     TOKEN_PRIVILEGES tp;
     LUID luid;
 
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+    if (!fOpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
         printf("[!] OpenProcessToken a échoué.\n");
         return FALSE;
     }
-    if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid)) {
+    if (!fLookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &luid)) {
         printf("[!] LookupPrivilegeValue a échoué.\n");
         CloseHandle(hToken);
         return FALSE;
@@ -33,7 +55,7 @@ BOOL EnableDebugPrivilege(void) {
     tp.PrivilegeCount = 1;
     tp.Privileges[0].Luid = luid;
     tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    if (!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL)) {
+    if (!fAdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL)) {
         printf("[!] AdjustTokenPrivileges a échoué.\n");
         CloseHandle(hToken);
         return FALSE;
@@ -46,6 +68,7 @@ BOOL EnableDebugPrivilege(void) {
     CloseHandle(hToken);
     return TRUE;
 }
+
 
 // --- Fonction de conversion ---
 // --- Convertit une chaîne de caractères ANSI (char*) en Unicode (wchar_t*). ---
