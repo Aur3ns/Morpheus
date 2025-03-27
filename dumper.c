@@ -16,7 +16,7 @@
 
 // Activation du privilège SeDebugPrivilege
 BOOL EnableDebugPrivilege(void) {
-    HMODULE hAdvapi = GetModuleHandleW(L"advapi32.dll");
+    HMODULE hAdvapi = LoadLibraryW(L"advapi32.dll");
     if (!hAdvapi) {
         printf("[!] Failed to load advapi32.dll.\n");
         return FALSE;
