@@ -18,7 +18,7 @@ def print_progress(current, total):
     # Affichage de la progression avec la barre de progression
     print(f"\r[Reconstitution] [{bar}] {percent}% ({current}/{total})", end='', flush=True)
 
-def run_receiver(host, port, output_file, timeout=30):
+def run_receiver(host, port, output_file, timeout=1200):
     """
     Attend des paquets UDP (format NTP) sur le port donné.
     Le premier paquet (header) contient :
