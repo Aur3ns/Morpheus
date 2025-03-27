@@ -6,11 +6,11 @@ import zlib
 import logging
 import time
 
-# Configure logging
+# Configuration du logging (system messages in English)
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
 def print_progress(current, total):
-    """Displays a progress bar in the console."""
+    """Affiche une barre de progression dans la console."""
     percent = int((current / total) * 100) if total > 0 else 0
     bar_length = 20
     filled_length = int(bar_length * percent // 100)
@@ -19,78 +19,76 @@ def print_progress(current, total):
 
 def run_receiver(host, port, output_file, base_timeout=120):
     """
-    Listens for UDP packets (NTP format) on the specified port.
-    The first packet (header) contains:
-      - 4 bytes: total number of fragments (big-endian)
-      - 4 bytes: total size of the compressed stream (big-endian)
-    Each subsequent packet contains:
-      - 4 bytes: fragment sequence number (big-endian)
-      - 4 bytes: fragment of compressed data
-    Once all fragments are received or the timeout expires, the stream is reassembled and decompressed.
-    The final dump is saved to output_file.
+    Écoute les paquets UDP au format NTP sur le port spécifié.
+    Le premier paquet (header) contient :
+      - 4 octets : total de fragments (big-endian)
+      - 4 octets : total size of compressed stream (big-endian)
+    Chaque paquet suivant contient :
+      - 4 octets : sequence number (big-endian)
+      - 4 octets : fragment of compressed data
+    Après réception, le flux est reassemblé, decompressed and saved to output_file.
+    À la fin, le récepteur envoie un feedback indiquant les fragments manquants.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host, port))
     sock.settimeout(5)  # Timeout per packet
-    logging.info(f"Listening on {host}:{port} (initial base timeout: {base_timeout}s)")
+    logging.info(f"Listening on {host}:{port} (base timeout: {base_timeout}s)")
 
     header_received = False
     total_fragments = 0
     total_size = 0
     fragments = {}
     start_time = time.time()
-    dynamic_timeout = base_timeout  # Default if no header is received
+    dynamic_timeout = base_timeout  # Default timeout if no header is received
+    first_sender_addr = None  # Adresse de l'expéditeur
 
     while True:
         try:
             data, addr = sock.recvfrom(1024)
         except socket.timeout:
-            # Stop if overall timeout exceeded
             if time.time() - start_time > dynamic_timeout:
                 logging.warning("Global timeout reached, stopping reception.")
                 break
             else:
                 continue
 
-        if len(data) < 48:
-            # Ignore malformed packets
-            continue
+        # Sauvegarder l'adresse du premier expéditeur
+        if first_sender_addr is None:
+            first_sender_addr = addr
 
-        # Extract the NTP transmit timestamp (bytes 40 to 47)
+        if len(data) < 48:
+            continue  # Ignorer les paquets mal formés
+
+        # Extraction du champ "transmit timestamp" (octets 40 à 47)
         payload = data[40:48]
 
         if not header_received:
-            # This is the first packet (header)
             total_fragments = struct.unpack(">I", payload[:4])[0]
             total_size = struct.unpack(">I", payload[4:8])[0]
             header_received = True
-
-            # Dynamically calculate timeout based on expected fragment rate
-            min_rate = 1000  # fragments per second (adjustable)
+            # Ajuster le timeout en fonction d'un taux minimal de fragments attendu
+            min_rate = 1000  # fragments per second
             estimated_time = total_fragments / min_rate
-            dynamic_timeout = int(estimated_time * 1.5)  # add margin of safety
+            dynamic_timeout = int(estimated_time * 1.5)
             logging.info(f"Header received: {total_fragments} fragments, {total_size} compressed bytes.")
-            logging.info(f"Adjusted timeout to {dynamic_timeout} seconds based on expected fragment rate.")
+            logging.info(f"Timeout adjusted to {dynamic_timeout} seconds.")
         else:
-            # Extract sequence number and fragment
             seq = struct.unpack(">I", payload[:4])[0]
             fragment = payload[4:8]
             if seq not in fragments:
                 fragments[seq] = fragment
                 print_progress(len(fragments), total_fragments)
 
-            # If all fragments are received, stop listening
             if len(fragments) == total_fragments:
                 logging.info("\nAll fragments received.")
                 break
 
-        # Double-check timeout after processing
         if time.time() - start_time > dynamic_timeout:
             logging.warning("Global timeout exceeded, ending reception.")
             break
 
     sock.close()
-    print()  # Newline after progress bar
+    print()  # Saut de ligne après la barre de progression
 
     if not header_received:
         logging.error("No header received. Exiting.")
@@ -100,16 +98,14 @@ def run_receiver(host, port, output_file, base_timeout=120):
         logging.warning(f"Expected fragments: {total_fragments} | Received: {len(fragments)}")
         logging.warning("The dump may be incomplete.")
 
-    # Reassemble compressed stream in order
+    # Réassembler le flux compressé dans l'ordre
     compressed_data = bytearray()
     for i in range(total_fragments):
-        fragment = fragments.get(i, b'\0'*4)  # Pad with nulls if missing
+        fragment = fragments.get(i, b'\0'*4)  # Remplir avec des zéros si fragment manquant
         compressed_data.extend(fragment)
+    compressed_data = compressed_data[:total_size]  # Tronquer à la taille attendue
 
-    # Truncate to expected size
-    compressed_data = compressed_data[:total_size]
-
-    # Attempt to decompress and save
+    # Décompression et sauvegarde du dump
     try:
         dump_data = zlib.decompress(compressed_data)
         with open(output_file, "wb") as f:
@@ -121,8 +117,25 @@ def run_receiver(host, port, output_file, base_timeout=120):
             f.write(compressed_data)
         logging.info(f"Compressed dump saved to {output_file}.compressed.")
 
+    # Envoi du feedback avec les fragments manquants
+    missing_fragments = [i for i in range(total_fragments) if i not in fragments]
+    if missing_fragments and first_sender_addr:
+        logging.info(f"Missing fragments: {missing_fragments}")
+        feedback = struct.pack(">I", len(missing_fragments))
+        for seq in missing_fragments:
+            feedback += struct.pack(">I", seq)
+        feedback_port = 124  # Port de feedback
+        feedback_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            feedback_sock.sendto(feedback, (first_sender_addr[0], feedback_port))
+            logging.info(f"Feedback sent to {first_sender_addr[0]}:{feedback_port}")
+        except Exception as e:
+            logging.error(f"Feedback sending error: {e}")
+        finally:
+            feedback_sock.close()
+
 if __name__ == '__main__':
-    host = "0.0.0.0"   # Listen on all interfaces
-    port = 123         # UDP port (simulating NTP traffic)
+    host = "0.0.0.0"   # Écoute sur toutes les interfaces
+    port = 123         # Port UDP (simulating NTP traffic)
     output_file = "dump_memory.bin"
     run_receiver(host, port, output_file)
