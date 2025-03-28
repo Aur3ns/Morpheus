@@ -269,6 +269,13 @@ def run_receiver(host, port, output_file, base_timeout=120):
             frag = data_packets.get(seq, b'\x00\x00')
             reconstructed[seq*2:seq*2+2] = frag
 
+        # Affichage de la progression de la reconstruction
+        progress = ((b + 1) / num_blocks) * 100
+        bar_length = 20
+        filled_length = int(bar_length * (b + 1) / num_blocks)
+        bar = "=" * filled_length + "-" * (bar_length - filled_length)
+        logging.info(f"[Reconstruction] [{bar}] {progress:.1f}%")
+
     reconstructed = reconstructed[:total_size]
     try:
         dump_data = zlib.decompress(reconstructed)
@@ -300,6 +307,6 @@ def run_receiver(host, port, output_file, base_timeout=120):
 
 if __name__ == '__main__':
     host = "0.0.0.0"      # Écoute sur toutes les interfaces
-    port = 123            # Port UDP simulant le trafic NTP (attention : sur Linux ce port est réservé et nécessite des privilèges root)
+    port = 123            # Port UDP simulant le trafic NTP (attention: on Linux this port is reserved and may require root privileges)
     output_file = "dump_memory.bin"
     run_receiver(host, port, output_file)
