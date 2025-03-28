@@ -171,7 +171,6 @@ def run_receiver(host, port, output_file, base_timeout=120):
     fec_packets = {}    # Dictionnaire : (index bloc, index dans bloc) -> 2 octets
     start_time = time.time()
     sender_addr = None
-    last_progress = 0
 
     logging.info("Waiting for header...")
     while True:
@@ -204,11 +203,9 @@ def run_receiver(host, port, output_file, base_timeout=120):
             seq = val >> 16
             frag = val & 0xFFFF
             data_packets[seq] = frag.to_bytes(2, 'big')
-            # Mise à jour de la progression (tous les 5 %)
+            # Mise à jour de la progression de la réception
             progress = (len(data_packets) / total_fragments) * 100
-            if progress - last_progress >= 5:
-                last_progress = progress
-                logging.info(f"Progress: {len(data_packets)}/{total_fragments} fragments received ({progress:.1f}%)")
+            logging.info(f"Progress: {len(data_packets)}/{total_fragments} fragments received ({progress:.1f}%)")
         else:
             skip, val = deduce_skip(encrypted, RC4_KEY, total_fragments, is_fec=True)
             if skip is not None:
@@ -233,6 +230,8 @@ def run_receiver(host, port, output_file, base_timeout=120):
     reconstructed = bytearray(total_fragments * FRAGMENT_SIZE)
     
     logging.info("Reconstructing dump ...")
+    # Utilisation d'une barre de progression visible via stdout
+    bar_length = 30
     for b in range(num_blocks):
         block_start = b * BLOCK_SIZE
         k_block = min(BLOCK_SIZE, total_fragments - block_start)
@@ -268,14 +267,15 @@ def run_receiver(host, port, output_file, base_timeout=120):
             seq = block_start + i
             frag = data_packets.get(seq, b'\x00\x00')
             reconstructed[seq*2:seq*2+2] = frag
-
-        # Affichage de la progression de la reconstruction
+        
+        # Affichage de la barre de progression mise à jour
         progress = ((b + 1) / num_blocks) * 100
-        bar_length = 20
         filled_length = int(bar_length * (b + 1) / num_blocks)
         bar = "=" * filled_length + "-" * (bar_length - filled_length)
-        logging.info(f"[Reconstruction] [{bar}] {progress:.1f}%")
-
+        sys.stdout.write(f"\r[Reconstruction] [{bar}] {progress:5.1f}%")
+        sys.stdout.flush()
+    sys.stdout.write("\n")
+    
     reconstructed = reconstructed[:total_size]
     try:
         dump_data = zlib.decompress(reconstructed)
