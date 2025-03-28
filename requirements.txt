@@ -1,1 +1,0 @@
-gcc zlib1g-dev upx
