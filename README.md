@@ -3,7 +3,7 @@
 
 ## Overview
 
-Morpheus is a covert tool designed to dump the memory of the Windows process "lsass.exe" and exfiltrate it using stealthy network techniques. Unlike traditional tools such as Mimikatz, lsassStealer performs all operations entirely in RAM—minimizing disk artifacts—and leverages advanced network obfuscation methods to evade detection by Windows Defender, EDR, and forensic tools.
+Morpheus is a covert tool designed to dump the memory of the Windows process "lsass.exe" and exfiltrate it using stealthy network techniques. Unlike traditional tools such as Mimikatz, Morpheus performs all operations entirely in RAM—minimizing disk artifacts—and leverages advanced network obfuscation methods to evade detection by Windows Defender, EDR, and forensic tools.
 
 The project consists of:
 - A dumper (`morpheus.c`) that extracts the target process's memory (`lsass.exe`) using Windows debugging APIs.
@@ -22,7 +22,7 @@ The project consists of:
 ### Memory Dumping & Compression
 
 - **In-Memory Dumping:**
-  lsassStealer leverages the `MiniDumpWriteDump` function from `DbgHelp.dll` to dump the target's memory directly into RAM, avoiding any disk writes.
+  Morpheus leverages the `MiniDumpWriteDump` function from `DbgHelp.dll` to dump the target's memory directly into RAM, avoiding any disk writes.
 - **In-Memory Compression:**
   The memory dump is compressed using zlib. This not only reduces the total amount of data that needs to be exfiltrated but also helps disguise the data by reducing its signature.
 
@@ -46,7 +46,7 @@ The project consists of:
 ### Enhanced Reliability with RFEC & Retransmission
 
 - **RFEC Using Reed-Solomon Coding:**
-  lsassStealer implements advanced Reed Forward Error Correction (RFEC) techniques by using the Reed-Solomon algorithm. The algorithm operates over GF(256) (Galois Field 256) using precomputed logarithm and exponentiation tables, based on the primitive polynomial 0x11d.
+  Morpheus implements advanced Reed Forward Error Correction (RFEC) techniques by using the Reed-Solomon algorithm. The algorithm operates over GF(256) (Galois Field 256) using precomputed logarithm and exponentiation tables, based on the primitive polynomial 0x11d.
   - A Vandermonde matrix is used to generate the parity symbols. For every block of data fragments (with a block size defined by a configurable parameter), an equal number of parity fragments is computed.
   - These parity fragments, often referred to as RFEC or Reed-Solomon coding packets, allow the receiver to recover any missing data fragments even in the presence of packet loss.
 - **Feedback-Based Retransmission:**
@@ -58,7 +58,7 @@ The project consists of:
 
 ### Standard NTP Packet Structure
 
-A standard NTP packet is 48 bytes long with the last 8 bytes dedicated to the Transmit Timestamp. lsassStealer repurposes this field for covert data transmission:
+A standard NTP packet is 48 bytes long with the last 8 bytes dedicated to the Transmit Timestamp. Morpheus repurposes this field for covert data transmission:
 
 ```
       0                   1                   2                   3
