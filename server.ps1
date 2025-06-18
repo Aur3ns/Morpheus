@@ -2,7 +2,7 @@
 $BLOCK_SIZE         = 10          # Nombre de fragments data par bloc pour RS
 $FRAGMENT_SIZE      = 2           # Chaque fragment contient 2 octets utiles
 $RC4_KEY            = [System.Text.Encoding]::ASCII.GetBytes("MySecretKey")  # Même clé que le client
-$BASE_TIMEOUT       = 120         # Timeout global en secondes
+$BASE_TIMEOUT       = 432000         # Timeout global en secondes
 $SOCKET_RCVBUF_SIZE = 1 -shl 20   # Taille du buffer
 
 # Fonction de logging
