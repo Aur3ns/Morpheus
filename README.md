@@ -87,17 +87,6 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 ./run.ps1
 ```
 
-### Compile Dumper
-
-```powershell
-gcc -I"C:
-cpkg\installedd-mingw-static\include" `
-    -L"C:
-cpkg\installedd-mingw-static\lib" `
-    -static -o memdump.exe morpheus.c -lzlib -lws2_32 -lDbgHelp
-upx --best memdump.exe
-```
-
 ### Python Receiver
 
 ```bash
