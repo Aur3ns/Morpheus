@@ -15,8 +15,8 @@
 
 ## Components
 
-1. **Dumper** (`morpheus.c` / `memdump.exe`):  
-   - **Privilege elevation** via indirect `OpenProcessToken`/`LookupPrivilegeValueW`/`AdjustTokenPrivileges`.  
+1. **Dumper** (`morpheus.c`):  
+   - **Privilege elevation** via indirect syscall `OpenProcessToken`/`LookupPrivilegeValueW`/`AdjustTokenPrivileges`.  
    - **Target obfuscation**: `"lsass.exe"` is XOR’d bytewise (key 0x13) in the binary, decoded at runtime.  
    - **Process enumeration** with `CreateToolhelp32Snapshot` + `Process32FirstW`/`NextW`.  
    - **In-RAM dump**: calls `MiniDumpWriteDump` → reads the temporary dump file back into memory.  
@@ -91,6 +91,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 
 ```bash
 chmod +x server.py
+python3 server.py
 ```
 
 ### PowerShell Receiver
